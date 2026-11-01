@@ -8,13 +8,20 @@
  *
  *   put, put.raw, put.lines, put.nul   output is exactly the expected bytes
  *   put.peek    valid UTF-8, no control bytes besides line ends, no invisible
- *               characters, one line per argument plus the header
- *   put.quote   valid UTF-8, one line, no control bytes or invisible characters
- *   put.json    valid UTF-8, one line, no raw control bytes
+ *               characters, one line per argument plus the header, and
+ *               lossless: decoding it gives back exactly the arguments
+ *   put.quote   valid UTF-8, one line, no control bytes or invisible
+ *               characters, only safe characters outside quotes, never \'
+ *               inside $'...', and decoding it gives back the arguments
+ *   put.json    valid UTF-8, one line, no raw control bytes, and decoding it
+ *               gives back the arguments (when they're valid UTF-8)
+ *
+ * The decoders are in tests/decode.c.
  *
  * Breaking a property calls abort(), which libFuzzer reports as a crash and
  * saves the input that caused it. AddressSanitizer and UBSan are on too.
  */
+#include "decode.h"
 #include "modes.h"
 #include "out.h"
 #include "utf8.h"
@@ -139,6 +146,18 @@ static void check_exact(mode_fn mode, size_t n, char *const args[], char sep, ch
     free(want);
 }
 
+typedef bool (*decoder)(const unsigned char *s, size_t n, decoded_args *out);
+
+static void check_decodes(decoder decode, const unsigned char *out, size_t len, size_t n,
+                          char *const args[], const char *what) {
+    decoded_args d = {0};
+    bool ok = decode(out, len, &d) && decoded_equal(&d, n, args);
+    decoded_free(&d);
+    if (!ok) {
+        fail(what);
+    }
+}
+
 int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
     redirect_stdout();
 
@@ -174,12 +193,16 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
     if (count_byte(out, len, '\n') != n + 1) {
         fail("put.peek did not write exactly one line per argument");
     }
+    check_decodes(decode_peek, out, len, n, args,
+                  "put.peek output does not decode to the arguments");
     free(out);
 
     out = capture(mode_quote, n, args, &len);
     if (!clean_text(out, len, true) || count_byte(out, len, '\n') != 1 || out[len - 1] != '\n') {
         fail("put.quote output is not one clean line");
     }
+    check_decodes(decode_quote, out, len, n, args,
+                  "put.quote output does not decode to the arguments");
     free(out);
 
     bool all_utf8 = true;
@@ -192,6 +215,8 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
             len < 3 || out[len - 2] != ']') {
             fail("put.json output is not one clean line");
         }
+        check_decodes(decode_json, out, len, n, args,
+                      "put.json output does not decode to the arguments");
         free(out);
     }
 

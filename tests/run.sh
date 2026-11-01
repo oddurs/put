@@ -104,14 +104,31 @@ expect 0 '1 arg\n0  \\u{b7}\\u{2205}\n' put.peek $'\xc2\xb7\xe2\x88\x85'
 expect 0 '1 arg\n0  h\xc3\xa9llo \xf0\x9f\x99\x82\n' put.peek $'h\xc3\xa9llo \xf0\x9f\x99\x82'
 expect 0 '11 args\n 0  a\n 1  b\n 2  c\n 3  d\n 4  e\n 5  f\n 6  g\n 7  h\n 8  i\n 9  j\n10  k\n' \
     put.peek a b c d e f g h i j k
+# Variation selector (emoji style), ZWJ, braille blank, private use, unassigned.
+expect 0 '1 arg\n0  \xe2\x9d\xa4\\u{fe0f}\n' put.peek $'\xe2\x9d\xa4\xef\xb8\x8f'
+expect 0 '1 arg\n0  \xf0\x9f\x91\xa8\\u{200d}\xf0\x9f\x91\xa9\n' put.peek $'\xf0\x9f\x91\xa8\xe2\x80\x8d\xf0\x9f\x91\xa9'
+expect 0 '3 args\n0  \\u{2800}\n1  \\u{e000}\n2  \\u{378}\n' put.peek $'\xe2\xa0\x80' $'\xee\x80\x80' $'\xcd\xb8'
+# A combining mark shows as itself after a letter, and is escaped with nothing
+# to attach to: at the start, or after a space marker or an escape.
+expect 0 '4 args\n0  e\xcc\x81\n1  \\u{301}x\n2  \xc2\xb7\\u{301}\n3  \\t\\u{301}\n' \
+    put.peek $'e\xcc\x81' $'\xcc\x81x' $' \xcc\x81' $'\t\xcc\x81'
 
 # --- put.quote --------------------------------------------------------------
-expect 0 "plain 'two words' 'it'\\\\''s' \$'tab\\\\there' '' '=ls' a=b\n" \
+expect 0 "plain 'two words' 'it'\\\\''s' \$'tab\\\\there' '' '=ls' 'a=b'\n" \
     put.quote plain 'two words' "it's" $'tab\there' '' '=ls' 'a=b'
 expect 0 '\n' put.quote
 expect 0 "\$'\\\\xff'\n" put.quote $'\xff'
 expect 0 "\$'nb\\\\xc2\\\\xa0sp'\n" put.quote $'nb\xc2\xa0sp'
-expect 0 "\$'a\\\\\\\\b\\\\'c\\\\n'\n" put.quote $'a\\b\'c\n'
+# A ' inside $'...' is \x27, never \' (bash 3.2 history expansion).
+expect 0 "\$'a\\\\\\\\b\\\\x27c\\\\n'\n" put.quote $'a\\b\'c\n'
+expect 0 "\$'x\\\\x27!echo\\\\x01'\n" put.quote $'x\'!echo\x01'
+# Any = is quoted (zsh's MAGIC_EQUAL_SUBST expands a==cmd and a:=cmd).
+expect 0 "'a==ls' 'b:=ls' -o 'k=v'\n" put.quote 'a==ls' 'b:=ls' -o 'k=v'
+expect 0 "'hi!' 'a!b'\n" put.quote 'hi!' 'a!b'
+# A combining mark that would draw on a quote mark or an escape is escaped.
+expect 0 "'e\xcc\x81' \$'\\\\xcc\\\\x81x' \$'it\\\\x27\\\\xcc\\\\x81s'\n" \
+    put.quote $'e\xcc\x81' $'\xcc\x81x' $'it\'\xcc\x81s'
+expect 0 "\$'\\\\xef\\\\xb8\\\\x8f'\n" put.quote $'\xef\xb8\x8f'
 # shellcheck disable=SC2016 # the literal text $HOME is the point
 expect 0 "'~home' '#x' '*' '\$HOME' 'a b'\n" put.quote '~home' '#x' '*' '$HOME' 'a b'
 expect 0 "'h\xc3\xa9llo'\n" put.quote $'h\xc3\xa9llo'
@@ -130,8 +147,9 @@ check "put.help lists put.peek" grep -q 'put.peek' "$TMP/help"
 
 # --- put.version ------------------------------------------------------------
 VERSION=$(sed -n 's/^VERSION := //p' "$(dirname "$0")/../Makefile")
-expect 0 "put $VERSION\n" put.version
-expect 0 "put $VERSION\n" put.version --help
+UNICODE=$(sed -n 's/^#define PUT_UNICODE_VERSION "\(.*\)"$/\1/p' "$(dirname "$0")/../src/unicode_tables.h")
+expect 0 "put $VERSION (Unicode $UNICODE)\n" put.version
+expect 0 "put $VERSION (Unicode $UNICODE)\n" put.version --help
 
 # --- errors -----------------------------------------------------------------
 ln -s "$BIN/put" "$TMP/put.bogus"
@@ -157,22 +175,17 @@ if [ -z "$RUNNER" ]; then
     "$BIN/put.raw" >&- 2>"$TMP/err"
     check "closed stdout with no output exits 0" [ $? -eq 0 ]
 
-    # A reader that has already exited should end put quietly via SIGPIPE
-    # (status 128+13). The reader here (`true`) exits at once; put writes
-    # after a short delay, into a pipe nobody is reading. The trap makes the
-    # parent ignore SIGPIPE first, which put inherits, so this also checks
-    # that put restores the default instead of failing with a write error.
-    (
-        trap '' PIPE
-        sleep 0.2
-        exec "$BIN/put" x
-    ) | true
-    check "closed pipe ends put with SIGPIPE" [ "${PIPESTATUS[0]}" -eq 141 ]
+    # SIGPIPE behavior is tested in tests/io.py, where the pipe's read end can
+    # be closed before put starts instead of racing a reader.
 
-    # Color needs a terminal; util-linux `script` provides a fake one.
+    # Color needs a terminal; util-linux `script` provides a fake one. TERM
+    # is set explicitly so the result doesn't depend on the caller's terminal.
     if script --version 2>/dev/null | grep -q util-linux; then
+        export TERM=xterm-256color
         script -qec "'$BIN/put.peek' 'x '" /dev/null >"$TMP/tty"
         check "peek colors markers on a terminal" grep -q $'\x1b\\[2m' "$TMP/tty"
+        NO_COLOR='' script -qec "'$BIN/put.peek' 'x '" /dev/null >"$TMP/tty"
+        check "empty NO_COLOR keeps color" grep -q $'\x1b\\[2m' "$TMP/tty"
         NO_COLOR=1 script -qec "'$BIN/put.peek' 'x '" /dev/null >"$TMP/tty"
         check "NO_COLOR turns color off" bash -c "! grep -q \$'\\x1b' '$TMP/tty'"
         TERM=dumb script -qec "'$BIN/put.peek' 'x '" /dev/null >"$TMP/tty"
