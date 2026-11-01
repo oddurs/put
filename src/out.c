@@ -1,40 +1,110 @@
 /*
- * out.c — buffered output with error tracking.
+ * out.c — buffered output straight to the stdout file descriptor.
  *
- * We use C's standard I/O library (stdio). fwrite() copies bytes into a buffer
- * in memory and only talks to the operating system when the buffer fills or
- * we flush it. That's fast, but it means a write can "succeed" now and fail
- * later. So we remember the first failure and report it in out_finish().
+ * C's stdio (fwrite, printf) would work, but a tool whose only job is output
+ * should get every failure case right, and that's easier without stdio in the
+ * way. We keep our own 64 KiB buffer and hand it to the operating system with
+ * write(2), handling the cases stdio leaves to chance:
+ *
+ *   partial writes  write() may accept fewer bytes than asked; loop until done
+ *   EINTR           a signal interrupted the call; just try again
+ *   EAGAIN          stdout was left non-blocking by another program (common
+ *                   with Node.js and some terminals); wait until it's ready
+ *   late errors     the first failure is remembered and reported once, at the
+ *                   end, with a nonzero exit code
  */
 #include "out.h"
 
 #include <errno.h>
+#include <poll.h>
 #include <stdarg.h>
 #include <stdbool.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
+
+#define OUT_BUFFER_SIZE 65536
 
 /*
  * C note: `static` at file level means "private to this file". No other .c
- * file can see these two variables, which is how C does encapsulation.
+ * file can see these variables, which is how C does encapsulation.
  */
+static char buffer[OUT_BUFFER_SIZE];
+static size_t used = 0;
 static bool failed = false;
 static int saved_errno = 0;
 
-static void note_failure(void) {
+static void fail_with(int err) {
     if (!failed) {
         failed = true;
-        saved_errno = errno; /* errno is set by the library call that just failed */
+        saved_errno = err;
     }
+}
+
+/* EAGAIN and EWOULDBLOCK are the same number on most systems, but not all. */
+static bool would_block(int err) {
+#if defined(EWOULDBLOCK) && EWOULDBLOCK != EAGAIN
+    if (err == EWOULDBLOCK) {
+        return true;
+    }
+#endif
+    return err == EAGAIN;
+}
+
+/* Sleep until stdout can take more data. Returns false on a real error. */
+static bool wait_until_writable(void) {
+    struct pollfd pfd = {.fd = STDOUT_FILENO, .events = POLLOUT, .revents = 0};
+    for (;;) {
+        int ready = poll(&pfd, 1, -1); /* -1: no timeout */
+        if (ready > 0) {
+            return true; /* writable, or an error the next write() will report */
+        }
+        if (ready < 0 && errno != EINTR) {
+            return false;
+        }
+    }
+}
+
+/* Write all n bytes at p to stdout, or record why we couldn't. */
+static void write_all(const char *p, size_t n) {
+    while (n > 0 && !failed) {
+        ssize_t written = write(STDOUT_FILENO, p, n);
+        if (written > 0) {
+            p += written;
+            n -= (size_t)written;
+        } else if (written < 0 && errno == EINTR) {
+            continue;
+        } else if (written < 0 && would_block(errno)) {
+            if (!wait_until_writable()) {
+                fail_with(errno);
+            }
+        } else {
+            /* write() returning 0 for a nonzero request "shouldn't happen",
+             * but if it does, looping would spin forever. */
+            fail_with(written < 0 ? errno : EIO);
+        }
+    }
+}
+
+void out_flush(void) {
+    write_all(buffer, used);
+    used = 0;
 }
 
 void out_bytes(const char *p, size_t n) {
     if (failed || n == 0) {
         return; /* after one error, stop writing instead of erroring again */
     }
-    if (fwrite(p, 1, n, stdout) != n) {
-        note_failure();
+    if (n > sizeof buffer - used) {
+        out_flush();
+        if (n >= sizeof buffer) {
+            write_all(p, n); /* too big to buffer: send it directly */
+            return;
+        }
     }
+    memcpy(buffer + used, p, n);
+    used += n;
 }
 
 void out_str(const char *s) {
@@ -49,31 +119,53 @@ void out_printf(const char *fmt, ...) {
     if (failed) {
         return;
     }
-    /* C note: `...` takes a variable number of arguments; va_list walks them. */
+    /*
+     * C note: `...` takes a variable number of arguments; a va_list walks
+     * them. vsnprintf formats into a buffer we own and returns the length
+     * the full result needs, so a long result can get a bigger buffer. A
+     * va_list can only be walked once, so va_copy keeps a spare.
+     */
+    char small[128];
     va_list ap;
+    va_list again;
     va_start(ap, fmt);
+    va_copy(again, ap);
     /* clang-tidy's analyzer misreads va_start here and reports an
      * uninitialized va_list, a known false positive. */
-    int written = vfprintf(stdout, fmt, ap); // NOLINT(clang-analyzer-valist.Uninitialized)
+    int len =
+        vsnprintf(small, sizeof small, fmt, ap); // NOLINT(clang-analyzer-valist.Uninitialized)
     va_end(ap);
-    if (written < 0) {
-        note_failure();
+
+    if (len < 0) {
+        fail_with(errno != 0 ? errno : EINVAL);
+    } else if ((size_t)len < sizeof small) {
+        out_bytes(small, (size_t)len);
+    } else {
+        char *big = malloc((size_t)len + 1);
+        if (big == NULL) {
+            fail_with(ENOMEM);
+        } else {
+            vsnprintf(big, (size_t)len + 1, fmt, again);
+            out_bytes(big, (size_t)len);
+            free(big);
+        }
     }
+    va_end(again);
 }
 
 int out_finish(const char *prog) {
-    /* fclose flushes whatever is still buffered, which is where most errors
-     * (like a full disk) actually show up. */
-    if (fclose(stdout) != 0) {
-        note_failure();
+    out_flush();
+    /*
+     * Closing stdout can report an error that write() didn't, for example on
+     * network filesystems. EBADF means stdout was never open; if anything had
+     * been written, write() would have failed already, so that's fine.
+     */
+    if (!failed && close(STDOUT_FILENO) != 0 && errno != EINTR && errno != EBADF) {
+        fail_with(errno);
     }
     if (!failed) {
         return 0;
     }
-    if (saved_errno != 0) {
-        fprintf(stderr, "%s: write error: %s\n", prog, strerror(saved_errno));
-    } else {
-        fprintf(stderr, "%s: write error\n", prog);
-    }
+    fprintf(stderr, "%s: write error: %s\n", prog, strerror(saved_errno));
     return 1;
 }

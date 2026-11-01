@@ -1,15 +1,17 @@
 /*
- * unit.c — unit tests for the UTF-8 decoder.
+ * unit.c — unit tests for the UTF-8 decoder and the output layer.
  *
  * C has no built-in test framework, and for a project this size we don't
  * need one: a macro that records failures is enough. Build and run with
  * `make test`.
  */
+#include "out.h"
 #include "utf8.h"
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 static int failures = 0;
 static int checks = 0;
@@ -105,6 +107,40 @@ static void test_classification(void) {
     CHECK(!utf8_is_invisible(0x1F642));
 }
 
+/*
+ * out_printf formats into a 128-byte stack buffer and falls back to the heap
+ * for longer results. Point stdout at a temporary file, print something long,
+ * and read it back.
+ */
+static void test_out_printf_long(void) {
+    fflush(stdout);
+    int saved = dup(STDOUT_FILENO); /* keep the real stdout to restore later */
+    FILE *tmp = tmpfile();
+    int redirected = saved >= 0 && tmp != NULL && dup2(fileno(tmp), STDOUT_FILENO) >= 0;
+    CHECK(redirected);
+    if (!redirected) {
+        return;
+    }
+
+    char big[300];
+    memset(big, 'x', sizeof big - 1);
+    big[sizeof big - 1] = '\0';
+    out_printf("<%s>", big);
+    out_flush();
+
+    dup2(saved, STDOUT_FILENO);
+    close(saved);
+
+    char got[400];
+    size_t n = fseek(tmp, 0, SEEK_SET) == 0 ? fread(got, 1, sizeof got, tmp) : 0;
+    fclose(tmp);
+    CHECK(n == 301);
+    if (n != 301) {
+        return;
+    }
+    CHECK(got[0] == '<' && got[1] == 'x' && got[299] == 'x' && got[300] == '>');
+}
+
 int main(void) {
     test_ascii();
     test_multibyte();
@@ -112,6 +148,7 @@ int main(void) {
     test_no_overread();
     test_valid_strings();
     test_classification();
+    test_out_printf_long();
 
     printf("unit: %d checks, %d failed\n", checks, failures);
     return failures == 0 ? 0 : 1;

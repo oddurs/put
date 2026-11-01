@@ -27,6 +27,9 @@ void out_byte(char c);
  */
 void out_printf(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
 
+/* Send everything buffered so far to stdout. out_finish() calls this. */
+void out_flush(void);
+
 /*
  * Flush and close stdout. Returns 0 if every byte was written, or prints an
  * error naming `prog` to stderr and returns 1. Call this exactly once, last.
