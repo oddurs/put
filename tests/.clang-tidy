@@ -1,0 +1,3 @@
+InheritParentConfig: true
+# The CHECK macro inflates cognitive complexity; test functions are flat lists.
+Checks: -readability-function-cognitive-complexity
