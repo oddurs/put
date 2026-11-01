@@ -203,6 +203,7 @@ lint: fmt-check tidy shellcheck man-lint check-version
 # src/unicode_tables.h is generated; this fails if it's out of date. Needs the
 # `regex` Python package at the version pinned in the script.
 check-unicode:
+	mkdir -p $(BUILD)
 	$(PYTHON) scripts/gen-unicode.py > $(BUILD)/unicode_tables.h.new
 	cmp src/unicode_tables.h $(BUILD)/unicode_tables.h.new || { \
 		echo "src/unicode_tables.h is out of date: run python3 scripts/gen-unicode.py > src/unicode_tables.h"; \

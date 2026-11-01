@@ -84,11 +84,15 @@ jobs:
         with:
           envs: PUT_STRICT
           usesh: true
-          # One explicit Python version, used for both pip and the tests.
-          prepare: pkg install -y bash gmake python311 py311-pip zsh
+          # pip's package name carries the Python version (py311-pip,
+          # py312-pip, ...), so ask the installed python3 which one it is.
+          prepare: |
+            pkg install -y bash gmake python3 zsh
+            pkg install -y "py$(python3 -c 'import sys; print("%d%d" % sys.version_info[:2])')-pip"
           run: |
-            python3.11 -m pip install --break-system-packages -r tests/requirements.txt
-            gmake PYTHON=python3.11 WERROR=1 test
+            uname -a
+            python3 -m pip install --break-system-packages -r tests/requirements.txt
+            gmake WERROR=1 test
 
   sanitize:
     name: sanitizers (ASan + UBSan)

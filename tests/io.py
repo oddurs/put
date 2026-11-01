@@ -121,7 +121,9 @@ def check_full_terminal(binary: str) -> None:
     args = [f"tty-line-{i:05d}".encode() for i in range(20000)]
     want = b"".join(a + b"\n" for a in args)
     proc = subprocess.Popen([binary, *args], stdout=slave, stderr=subprocess.PIPE)
-    os.close(slave)
+    # Keep our copy of the terminal open until everything is read: macOS
+    # throws away unread terminal output when the last handle to it closes,
+    # which would lose the tail of what put wrote after it exits.
 
     time.sleep(1.0)
     got = bytearray()
@@ -131,7 +133,7 @@ def check_full_terminal(binary: str) -> None:
             break
         try:
             chunk = os.read(master, 65536)
-        except OSError:  # Linux reports EIO once the other side is closed
+        except OSError:  # EIO if the other side has gone away
             break
         if not chunk:
             break
@@ -139,6 +141,7 @@ def check_full_terminal(binary: str) -> None:
     _, status, usage = os.wait4(proc.pid, 0)
     stderr = proc.stderr.read()
     proc.stderr.close()
+    os.close(slave)
     os.close(master)
 
     check("full terminal: exit 0", os.waitstatus_to_exitcode(status) == 0, stderr)

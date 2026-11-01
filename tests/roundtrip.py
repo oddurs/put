@@ -59,6 +59,14 @@ def run(binary: str, args: list) -> subprocess.CompletedProcess:
     return subprocess.run([binary, *args], capture_output=True, check=False)
 
 
+def version_of(argv: list) -> str:
+    """'5.2.21' or '3.2.57' for bash, '5.9' for zsh: shown in the summary so a
+    CI log says exactly which shells were tested."""
+    out = subprocess.run([argv[0], "-c", 'echo "${BASH_VERSION:-$ZSH_VERSION}"'],
+                         capture_output=True, text=True, check=False).stdout.strip()
+    return out.split("(")[0] or "?"
+
+
 def shells() -> list:
     """(label, argv) for each shell to test; -c or -i is appended later."""
     found = []
@@ -102,6 +110,7 @@ def main() -> int:
 
     tested = shells()
     labels = [label for label, _ in tested]
+    described = [f"{label} {version_of(argv)}" for label, argv in tested]
     if "bash" not in labels:
         print("roundtrip: bash is required")
         return 1
@@ -192,7 +201,7 @@ def main() -> int:
         fail("shells created files (quoting let a redirect through)", [], leftovers[:5])
     scratch_dir.cleanup()
 
-    print(f"roundtrip: {iterations} cases, shells: {', '.join(labels)} "
+    print(f"roundtrip: {iterations} cases, shells: {', '.join(described)} "
           f"(each with -c and -i), {failures} failed")
     return 1 if failures else 0
 
