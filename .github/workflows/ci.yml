@@ -9,57 +9,163 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+# Actions are pinned to full commit SHAs so a moved tag can't change what
+# runs here. Dependabot keeps the pins current.
+
 jobs:
   test:
-    name: test (${{ matrix.os }}, ${{ matrix.cc }})
+    name: test (${{ matrix.name }})
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
         include:
-          - { os: ubuntu-latest, cc: gcc }
-          - { os: ubuntu-latest, cc: clang }
-          - { os: macos-latest, cc: clang }
+          - { name: linux x86_64 gcc, os: ubuntu-24.04, cc: gcc }
+          - { name: linux x86_64 clang, os: ubuntu-24.04, cc: clang }
+          - { name: linux arm64 gcc, os: ubuntu-24.04-arm, cc: gcc }
+          - { name: macos arm64 clang, os: macos-latest, cc: clang }
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - name: Install zsh
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y zsh
       - name: Build and test
         run: make CC=${{ matrix.cc }} WERROR=1 test
+      - name: Check hardening
+        if: runner.os == 'Linux'
+        run: make CC=${{ matrix.cc }} check-hardening
+
+  musl:
+    name: test (alpine musl, static)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Build and test in Alpine
+        run: |
+          docker run --rm -v "$PWD:/src" -w /src alpine:3.22 sh -euc '
+            apk add --no-cache build-base bash python3 zsh
+            make WERROR=1 test
+            make check-hardening
+            make clean
+            make STATIC=1 WERROR=1 test
+            make STATIC=1 check-hardening
+            ! readelf -d build/put | grep -q NEEDED
+          '
 
   sanitize:
     name: sanitizers (ASan + UBSan)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - run: sudo apt-get update && sudo apt-get install -y zsh
       - run: make CC=clang WERROR=1 sanitize
 
   valgrind:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - run: sudo apt-get update && sudo apt-get install -y valgrind
       - run: make WERROR=1 valgrind
 
-  lint:
-    name: format + clang-tidy
+  analyze:
+    name: gcc -fanalyzer
     runs-on: ubuntu-24.04
+    timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
-      - run: sudo apt-get update && sudo apt-get install -y clang-format-18 clang-tidy-18
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: make analyze
+
+  coverage:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: sudo apt-get update && sudo apt-get install -y zsh && pipx install gcovr
+      - run: make CC=gcc coverage
+      - name: Coverage summary
+        if: always()
+        run: |
+          {
+            echo '### Coverage'
+            echo '```'
+            cat build/cov/coverage.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: coverage-report
+          path: build/cov/*.html
+
+  fuzz:
+    name: fuzz (libFuzzer, 2 min)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: make WERROR=1 FUZZ_TIME=120 fuzz
+      - name: Keep crashing inputs
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: fuzz-crashes
+          path: |
+            crash-*
+            leak-*
+            timeout-*
+
+  lint:
+    name: format, clang-tidy, shellcheck
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: sudo apt-get update && sudo apt-get install -y clang-format-18 clang-tidy-18 shellcheck
       - run: make CLANG_FORMAT=clang-format-18 CLANG_TIDY=clang-tidy-18 lint
+      - name: Lint workflow files
+        run: pipx run --spec actionlint-py actionlint
 
   install:
     name: install to a staging directory
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - run: make install DESTDIR="$PWD/stage" PREFIX=/usr
       - name: Installed commands work
         run: |
           export PATH="$PWD/stage/usr/bin:$PATH"
           test "$(put -n)" = "-n"
+          put.version
           put.peek $'tab\there'
           test -f stage/usr/share/man/man1/put.1
+      - name: Uninstall removes everything
+        run: |
+          make uninstall DESTDIR="$PWD/stage" PREFIX=/usr
+          test -z "$(find stage -type f -o -type l)"

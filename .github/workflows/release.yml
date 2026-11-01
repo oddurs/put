@@ -1,0 +1,131 @@
+name: release
+
+# Every push to main builds and tests the release binaries (a dry run), so
+# packaging problems show up long before a release. Pushing a tag like
+# v0.1.0 does the same and then publishes a GitHub release with checksums
+# and signed build provenance.
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  linux:
+    name: linux ${{ matrix.arch }} (static, musl)
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { arch: x86_64, os: ubuntu-24.04 }
+          - { arch: aarch64, os: ubuntu-24.04-arm }
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Build, test and package in Alpine
+        run: |
+          docker run --rm -v "$PWD:/src" -w /src -e TARGET="${{ matrix.arch }}-linux" alpine:3.22 sh -euc '
+            apk add --no-cache build-base bash python3 zsh
+            make STATIC=1 CFLAGS=-O2 WERROR=1 test
+            make STATIC=1 CFLAGS=-O2 check-hardening
+            ! readelf -d build/put | grep -q NEEDED
+            make STATIC=1 CFLAGS=-O2 bindist
+          '
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: dist-linux-${{ matrix.arch }}
+          path: build/dist/*.tar.gz
+          if-no-files-found: error
+
+  macos:
+    name: macos universal
+    runs-on: macos-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Build both architectures and test the native one
+        run: |
+          make BUILD=build/arm64 CFLAGS="-O2 -arch arm64 -mmacosx-version-min=11.0" WERROR=1 test
+          make BUILD=build/x86_64 CFLAGS="-O2 -arch x86_64 -mmacosx-version-min=10.15" WERROR=1 all
+      - name: Combine into a universal binary
+        run: |
+          mkdir -p build/universal
+          lipo -create -output build/universal/put build/arm64/put build/x86_64/put
+          lipo -archs build/universal/put | grep -q x86_64
+          lipo -archs build/universal/put | grep -q arm64
+          ln -sf put build/universal/put.version
+          arch -arm64 build/universal/put.version
+          # The x86_64 half needs Rosetta, which the runner may not have.
+          if arch -x86_64 /usr/bin/true 2>/dev/null; then
+            arch -x86_64 build/universal/put.version
+          fi
+          rm build/universal/put.version
+      - run: make BUILD=build/universal TARGET=universal-macos bindist
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: dist-macos-universal
+          path: build/universal/dist/*.tar.gz
+          if-no-files-found: error
+
+  publish:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [linux, macos]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write # create the release
+      id-token: write # sign the provenance attestation
+      attestations: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Tag must match the version in the Makefile
+        run: |
+          version=$(make -s print-version)
+          test "${GITHUB_REF_NAME}" = "v${version}" || {
+            echo "tag ${GITHUB_REF_NAME} does not match Makefile VERSION ${version}"
+            exit 1
+          }
+          make check-version
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: dist-*
+          path: dist
+          merge-multiple: true
+      - name: Source tarball and checksums
+        run: |
+          make dist
+          cp build/put-*.tar.gz dist/
+          cd dist && sha256sum -- *.tar.gz > SHA256SUMS && cat SHA256SUMS
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: dist/*.tar.gz
+      - name: Release notes from CHANGELOG.md
+        run: |
+          version=$(make -s print-version)
+          awk -v v="$version" '
+            $0 ~ "^## \\[" v "\\]" { on = 1; next }
+            on && /^## \[/ { exit }
+            on && /^\[/ { exit }
+            on { print }
+          ' CHANGELOG.md > notes.md
+          cat notes.md
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" dist/* \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "put ${GITHUB_REF_NAME#v}" \
+            --notes-file notes.md \
+            --verify-tag

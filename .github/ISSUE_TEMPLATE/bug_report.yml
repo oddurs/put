@@ -1,0 +1,36 @@
+name: Bug report
+description: put printed something it shouldn't have, or failed when it shouldn't.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        For security problems, please report privately instead (see SECURITY.md).
+  - type: textarea
+    id: command
+    attributes:
+      label: Command
+      description: The exact command. If arguments contain invisible or control characters, `put.quote` shows a version you can paste.
+      render: shell
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected output
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual output
+      description: Piping through `od -c` shows the exact bytes.
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: put.version output and OS
+      placeholder: put 0.1.0, macOS 15 arm64
+    validations:
+      required: true
