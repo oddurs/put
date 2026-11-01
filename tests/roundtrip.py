@@ -137,6 +137,7 @@ def decode_cases(stdout: bytes) -> list:
 
 
 def main() -> int:
+    sys.stdout.reconfigure(line_buffering=True)  # show failures as they happen
     build = sys.argv[1] if len(sys.argv) > 1 else "build"
     iterations = int(sys.argv[2]) if len(sys.argv) > 2 else 300
     rng = random.Random(int(os.environ.get("PUT_SEED", "1")))
@@ -214,14 +215,27 @@ def main() -> int:
         # session goes wrong, its cases are replayed one per session to name
         # the exact line responsible.
         pairs = [(args, q) for args, q in zip(all_cases, quoted) if q is not None]
+
+        # First, can this shell run an interactive session here at all? If
+        # not, say so once rather than timing out on every chunk.
+        probe, back = interactive(argv, [b"probe"], scratch, 15)
+        if probe != [[b"probe"]]:
+            fail(f"{label} -i cannot run an interactive session in this environment", [],
+                 (back.returncode, back.stdout[-300:], back.stderr[-300:]))
+            continue
+
+        replays_failed = 0
         for start in range(0, len(pairs), CHUNK):
             chunk = pairs[start:start + CHUNK]
             got_cases, back = interactive(argv, [q for _, q in chunk], scratch, 60)
             if got_cases == [args for args, _ in chunk]:
                 continue
             for args, q in chunk:
+                if replays_failed >= 3:
+                    break  # enough to diagnose; don't spend minutes on more
                 one, back = interactive(argv, [q], scratch, 10)
                 if one != [args]:
+                    replays_failed += 1
                     fail(f"put.quote via {label} -i", args,
                          (b"typed: printf '%s\\0' " + q, one, back.stderr[-300:]))
 

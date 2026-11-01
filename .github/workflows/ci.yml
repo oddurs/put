@@ -91,6 +91,8 @@ jobs:
             pkg install -y "py$(python3 -c 'import sys; print("%d%d" % sys.version_info[:2])')-pip"
           run: |
             uname -a
+            echo "interactive bash probe:"
+            printf 'echo bash-i-works\nexit\n' | timeout 20 bash --norc --noprofile -i; echo "exit $?"
             python3 -m pip install --break-system-packages -r tests/requirements.txt
             gmake WERROR=1 test
 
