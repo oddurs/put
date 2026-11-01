@@ -59,12 +59,25 @@ def run(binary: str, args: list) -> subprocess.CompletedProcess:
     return subprocess.run([binary, *args], capture_output=True, check=False)
 
 
+# Shells run in a new session with no controlling terminal. Otherwise an
+# interactive shell started from a terminal (an ssh session, say) tries job
+# control, gets stopped for touching a terminal it doesn't own, and hangs.
+SHELL_RUN = {"capture_output": True, "check": False, "start_new_session": True}
+
+
+def run_shell(what: str, argv: list, timeout: float, **kwargs):
+    """Run a shell; a hang becomes a failure with a reason, not a stall."""
+    try:
+        return subprocess.run(argv, timeout=timeout, **SHELL_RUN, **kwargs)
+    except subprocess.TimeoutExpired:
+        return subprocess.CompletedProcess(argv, -1, b"", f"{what}: timed out".encode())
+
+
 def version_of(argv: list) -> str:
     """'5.2.21' or '3.2.57' for bash, '5.9' for zsh: shown in the summary so a
     CI log says exactly which shells were tested."""
-    out = subprocess.run([argv[0], "-c", 'echo "${BASH_VERSION:-$ZSH_VERSION}"'],
-                         capture_output=True, text=True, check=False).stdout.strip()
-    return out.split("(")[0] or "?"
+    out = run_shell("version", [argv[0], "-c", 'echo "${BASH_VERSION:-$ZSH_VERSION}"'], 30)
+    return out.stdout.decode().strip().split("(")[0] or "?"
 
 
 def shells() -> list:
@@ -169,8 +182,8 @@ def main() -> int:
         for args, q in zip(all_cases, quoted):
             if q is None:
                 continue
-            back = subprocess.run([*argv, "-c", b"printf '%s\\0' " + q],
-                                  capture_output=True, check=False, cwd=scratch)
+            back = run_shell(f"{label} -c", [*argv, "-c", b"printf '%s\\0' " + q], 30,
+                             cwd=scratch)
             got = back.stdout.split(b"\0")[:-1]
             if back.returncode != 0 or got != args:
                 fail(f"put.quote via {label} -c", args, (q, got, back.stderr))
@@ -182,9 +195,8 @@ def main() -> int:
             if q is not None:
                 script += b"printf '%s\\0' " + q + b" " + END + b"\n"
         script += b"exit\n"
-        back = subprocess.run([*argv, "-i"], input=script, capture_output=True, check=False,
-                              cwd=scratch,
-                              env={**os.environ, "HISTFILE": os.devnull, "PS1": "", "PS2": ""})
+        back = run_shell(f"{label} -i", [*argv, "-i"], 300, input=script, cwd=scratch,
+                         env={**os.environ, "HISTFILE": os.devnull, "PS1": "", "PS2": ""})
         out = back.stdout.split(b"\n", 1)[1] if back.stdout.startswith(b"history-bait\n") else back.stdout
         got_cases = decode_cases(out)
         want_cases = [args for args, q in zip(all_cases, quoted) if q is not None]
