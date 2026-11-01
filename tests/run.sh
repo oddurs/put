@@ -112,6 +112,7 @@ expect 0 '\n' put.quote
 expect 0 "\$'\\\\xff'\n" put.quote $'\xff'
 expect 0 "\$'nb\\\\xc2\\\\xa0sp'\n" put.quote $'nb\xc2\xa0sp'
 expect 0 "\$'a\\\\\\\\b\\\\'c\\\\n'\n" put.quote $'a\\b\'c\n'
+# shellcheck disable=SC2016 # the literal text $HOME is the point
 expect 0 "'~home' '#x' '*' '\$HOME' 'a b'\n" put.quote '~home' '#x' '*' '$HOME' 'a b'
 expect 0 "'h\xc3\xa9llo'\n" put.quote $'h\xc3\xa9llo'
 
@@ -126,6 +127,11 @@ expect 3 '' put.json ok $'\xff'
 "$BIN/put.help" >"$TMP/help" 2>&1
 check "put.help exits 0" [ $? -eq 0 ]
 check "put.help lists put.peek" grep -q 'put.peek' "$TMP/help"
+
+# --- put.version ------------------------------------------------------------
+VERSION=$(sed -n 's/^VERSION := //p' "$(dirname "$0")/../Makefile")
+expect 0 "put $VERSION\n" put.version
+expect 0 "put $VERSION\n" put.version --help
 
 # --- errors -----------------------------------------------------------------
 ln -s "$BIN/put" "$TMP/put.bogus"
@@ -143,6 +149,14 @@ if [ -w /dev/full ]; then
 fi
 
 if [ -z "$RUNNER" ]; then
+    # stdout closed by the caller: writing fails, and put says why.
+    "$BIN/put" hi >&- 2>"$TMP/err"
+    check "closed stdout exits 1" [ $? -eq 1 ]
+    check "closed stdout is reported" grep -q 'Bad file descriptor' "$TMP/err"
+    # Nothing to write, so a closed stdout is not an error.
+    "$BIN/put.raw" >&- 2>"$TMP/err"
+    check "closed stdout with no output exits 0" [ $? -eq 0 ]
+
     # A reader that has already exited should end put quietly via SIGPIPE
     # (status 128+13). The reader here (`true`) exits at once; put writes
     # after a short delay, into a pipe nobody is reading. The trap makes the
@@ -161,6 +175,18 @@ if [ -z "$RUNNER" ]; then
         check "peek colors markers on a terminal" grep -q $'\x1b\\[2m' "$TMP/tty"
         NO_COLOR=1 script -qec "'$BIN/put.peek' 'x '" /dev/null >"$TMP/tty"
         check "NO_COLOR turns color off" bash -c "! grep -q \$'\\x1b' '$TMP/tty'"
+        TERM=dumb script -qec "'$BIN/put.peek' 'x '" /dev/null >"$TMP/tty"
+        check "TERM=dumb turns color off" bash -c "! grep -q \$'\\x1b' '$TMP/tty'"
+
+        # A control byte and a backslash, styled: the escape is colored and
+        # the literal backslash is not doubled.
+        cat >"$TMP/styled.sh" <<EOF
+#!/bin/sh
+exec "$BIN/put.peek" "\$(printf 'a\\001b\\\\c')"
+EOF
+        chmod +x "$TMP/styled.sh"
+        script -qec "$TMP/styled.sh" /dev/null >"$TMP/tty"
+        check "styled escapes are colored" grep -qF $'\x1b[36m\\x01\x1b[0mb\\c' "$TMP/tty"
     fi
 fi
 

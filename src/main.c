@@ -12,8 +12,9 @@
 #include <stdio.h>
 #include <string.h>
 
-/* Defined below; the table needs to know it exists. */
+/* Defined below; the table needs to know they exist. */
 static int mode_help(size_t n, char *const args[]);
+static int mode_version(size_t n, char *const args[]);
 
 /*
  * The mode table. Each row pairs a name with a function pointer: a variable
@@ -36,6 +37,7 @@ static const struct mode MODES[] = {
     {"quote", mode_quote, "args as shell input that recreates them"},
     {"json", mode_json, "args as a JSON array of strings"},
     {"help", mode_help, "this text"},
+    {"version", mode_version, "the version number"},
 };
 
 /* sizeof the whole array / sizeof one element = number of elements. */
@@ -52,14 +54,21 @@ static int mode_help(size_t n, char *const args[]) {
             "\n");
     for (size_t i = 0; i < MODE_COUNT; i++) {
         if (MODES[i].name == NULL) {
-            out_printf("  %-11s %s\n", "put", MODES[i].summary);
+            out_printf("  %-12s %s\n", "put", MODES[i].summary);
         } else {
-            out_printf("  put.%-7s %s\n", MODES[i].name, MODES[i].summary);
+            out_printf("  put.%-8s %s\n", MODES[i].name, MODES[i].summary);
         }
     }
     out_str("\n"
             "Exit codes: 0 ok, 1 write error, 2 unknown mode, 3 put.json got invalid UTF-8\n"
             "More: man put, https://github.com/oddurs/put\n");
+    return EXIT_OK;
+}
+
+static int mode_version(size_t n, char *const args[]) {
+    (void)n;
+    (void)args;
+    out_str("put " PUT_VERSION "\n");
     return EXIT_OK;
 }
 
