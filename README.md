@@ -1,5 +1,8 @@
 # put
 
+[![ci](https://github.com/oddurs/put/actions/workflows/ci.yml/badge.svg)](https://github.com/oddurs/put/actions/workflows/ci.yml)
+[![codeql](https://github.com/oddurs/put/actions/workflows/codeql.yml/badge.svg)](https://github.com/oddurs/put/actions/workflows/codeql.yml)
+
 `echo`, reinvented. Every argument is printed exactly as given: no flags, no escape sequences, no surprises.
 
 ```sh
@@ -41,6 +44,7 @@ One binary, installed under several names (like `mkfs.ext4`). Type `put.` and pr
 | `put.quote` | shell input that recreates the args | a newline | bash `printf '%q '` |
 | `put.json` | a JSON array of strings | `[]` | hand-rolled JSON |
 | `put.help` | the list of modes | | `--help` |
+| `put.version` | the version number | | `--version` |
 
 ### put.peek
 
@@ -90,11 +94,22 @@ If any argument isn't valid UTF-8, `put.json` exits with status 3 and writes not
 
 ## Install
 
-Needs a C11 compiler and make.
+**Prebuilt binaries.** Each [release](https://github.com/oddurs/put/releases) has static Linux binaries (x86_64, aarch64; no dependencies) and a universal macOS binary, plus `SHA256SUMS` and signed build provenance:
+
+```sh
+v=0.1.0 target=x86_64-linux   # or aarch64-linux, universal-macos
+curl -fsSLO "https://github.com/oddurs/put/releases/download/v$v/put-$v-$target.tar.gz"
+curl -fsSLO "https://github.com/oddurs/put/releases/download/v$v/SHA256SUMS"
+sha256sum -c SHA256SUMS --ignore-missing      # macOS: shasum -a 256 -c
+tar xzf "put-$v-$target.tar.gz"
+cp -P "put-$v-$target"/bin/* ~/.local/bin/  # -P keeps the put.* links as links
+```
+
+**From source.** Needs a C11 compiler and make; builds in a couple of seconds with no dependencies.
 
 ```sh
 make
-sudo make install                 # /usr/local/bin and the man page
+sudo make install                  # /usr/local/bin and the man page
 make install PREFIX="$HOME/.local" # or somewhere you own
 ```
 
@@ -112,18 +127,20 @@ If the reader closes the pipe early (`put.lines ... | head -1`), `put` ends quie
 ## Development
 
 ```sh
-make test        # unit tests, golden byte-for-byte tests, round-trip fuzzing
-make sanitize    # everything again under AddressSanitizer + UBSan
-make valgrind    # golden tests under valgrind
+make check       # build, all tests, lint: run before pushing
 make fmt         # clang-format
-make lint        # format check + clang-tidy
 ```
 
-CI runs all of these on every push, with gcc and clang on Linux and clang on macOS, and `WERROR=1` so any compiler warning fails the build.
+How put is checked:
 
-The round-trip fuzzer (`tests/roundtrip.py`) feeds random byte strings through `put.quote` and back through real bash and zsh, through `put.json` and back through a JSON parser, and through `put.nul`, and checks every byte survives.
+- **Tests.** Byte-for-byte golden tests of every mode and exit code, unit tests, and I/O edge cases (closed stdout, full disk, non-blocking pipes, broken pipes).
+- **Round-trip fuzzing.** Random byte strings go through `put.quote` and back through real bash and zsh, through `put.json` and back through a JSON parser, and through `put.nul`, and every byte must survive.
+- **Coverage-guided fuzzing.** libFuzzer runs every mode on generated input, checking properties such as "`put.peek` never writes a control byte".
+- **Memory and analysis.** AddressSanitizer + UBSan, valgrind, clang-tidy, GCC's analyzer and CodeQL, plus line coverage of at least 95%.
+- **Hardened builds.** Stack protector, `_FORTIFY_SOURCE`, PIE and full RELRO, verified in CI.
+- **Platforms.** gcc and clang on Linux x86_64 and arm64, Alpine (musl), and macOS, all with warnings as errors.
 
-New to C? [docs/TOUR.md](docs/TOUR.md) walks through the codebase in reading order.
+[CONTRIBUTING.md](CONTRIBUTING.md) covers the rest, including how releases are cut. New to C? [docs/TOUR.md](docs/TOUR.md) walks through the codebase in reading order.
 
 ## License
 

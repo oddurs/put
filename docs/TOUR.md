@@ -1,6 +1,6 @@
 # A tour of put, for people new to C
 
-This codebase is small (about 800 lines of C, a good share of it comments) and written to be read. This guide gives a reading order and points out the C ideas you'll meet in each file. Every source file also has `C note:` comments at the places where something C-specific is happening.
+This codebase is small (about 900 lines of C, a good share of it comments) and written to be read. This guide gives a reading order and points out the C ideas you'll meet in each file. Every source file also has `C note:` comments at the places where something C-specific is happening.
 
 ## 0. How a C program gets built
 
@@ -29,10 +29,14 @@ The four plain modes are a few lines each. The interesting one is `mode_nul`: si
 
 ## 3. src/out.c: output and errors
 
+This is the most "systems" file in the project, and the one where production code differs most from tutorial code.
+
 - **`static` at file level** makes a variable or function private to its file. That's C's only encapsulation.
-- **stdio buffering.** `fwrite` copies into a buffer; the operating system only sees the bytes when the buffer fills or is flushed. A write can succeed now and fail at `fclose` time, which is why put checks the result at the very end.
-- **`errno`** is a global set by library calls when they fail. `strerror(errno)` turns it into a message like "No space left on device". Try `build/put hi > /dev/full` on Linux.
-- **Variadic functions.** `out_printf(const char *fmt, ...)` takes any number of arguments, like `printf` itself, using `va_list`.
+- **Buffering.** Asking the operating system to write is slow compared to copying memory, so output collects in a 64 KiB array and goes out in large chunks. `out_bytes` copies into the buffer; `out_flush` hands it to the OS.
+- **`write()` is a system call, and it can come up short.** It may write fewer bytes than asked (so `write_all` loops), be interrupted by a signal (`EINTR`: try again), or refuse because stdout is non-blocking (`EAGAIN`: wait with `poll()`, then try again). Tutorial code usually calls `printf` and hopes. `tests/io.py` sets up the non-blocking case, which the first version of put got wrong.
+- **`errno`** is a global set by library calls when they fail. `strerror(errno)` turns it into a message like "No space left on device". Try `build/put hi > /dev/full` on Linux, or `build/put hi >&-` to run with stdout closed.
+- **Variadic functions.** `out_printf(const char *fmt, ...)` takes any number of arguments, like `printf` itself, using `va_list`. It formats into a small stack array and only uses `malloc` when the result doesn't fit.
+- **Check errors once, at the end.** After the first failure, output stops and `out_finish` reports it. That keeps every call site simple: modes never check for errors themselves.
 
 ## 4. src/utf8.c: bits and bytes
 
@@ -50,9 +54,12 @@ The four plain modes are a few lines each. The interesting one is `mode_nul`: si
 
 ## 6. The tests
 
-- **tests/unit.c** tests the decoder directly. The `CHECK` macro uses `#cond` to turn the checked expression into a string and `__LINE__` to say where it failed.
+- **tests/unit.c** tests the decoder and output layer directly. The `CHECK` macro uses `#cond` to turn the checked expression into a string and `__LINE__` to say where it failed.
 - **tests/run.sh** runs each command and compares stdout byte for byte with `cmp`, plus the exit code.
 - **tests/roundtrip.py** is a property test: random input, a property that must always hold (quoting then unquoting gives back the input), thousands of tries.
+- **tests/io.py** sets up output conditions a shell can't easily create, like a non-blocking pipe with a slow reader.
+- **tests/fuzz.c** is a *coverage-guided fuzzer*. libFuzzer watches which branches each input reaches and mutates the inputs that found new ones, so it digs into corners random testing misses. Each run checks properties like "`put.peek` never writes a control byte". `make fuzz` runs it for a minute; it typically gets through a few hundred thousand inputs.
+- **`make coverage`** shows which lines the tests never run. Open `build/cov/index.html` to see them highlighted. CI fails if line coverage drops below 95%.
 
 ## 7. Tools that catch C's sharp edges
 
@@ -61,7 +68,8 @@ C trusts you completely. Reading past the end of an array or using a value you n
 - **AddressSanitizer (`make sanitize`)** adds checks around every memory access and stops the program with a report on the first bad one.
 - **UndefinedBehaviorSanitizer** (same target) catches things like signed integer overflow.
 - **valgrind (`make valgrind`)** runs the unmodified program on a simulated CPU and reports bad memory use and leaks.
-- **clang-tidy (`make tidy`)** reads the code without running it and flags bug patterns.
+- **clang-tidy (`make tidy`)** and **GCC's analyzer (`make analyze`)** read the code without running it and follow paths through it looking for bugs. CodeQL does the same on GitHub.
+- **Hardening flags** (in the Makefile) don't find bugs; they make a bug that slips through harder to exploit. Stack canaries detect a smashed stack, `_FORTIFY_SOURCE` swaps `memcpy` and friends for versions that check sizes, and a position-independent executable lets the OS load it at a random address. `make check-hardening` confirms they made it into the binary.
 
 ### Try it: watch AddressSanitizer catch a bug
 
@@ -77,5 +85,5 @@ Without the sanitizer, that same bug would usually pass the tests by luck.
 Small features that each exercise a different part of C:
 
 - **Byte counts in `put.peek`**: show each argument's length in bytes. (Formatting with `out_printf`.)
-- **`put.count`**: print the number of arguments. (Adding a row to the mode table, plus a test.)
+- **`put.count`**: print the number of arguments. (Adding a row to the mode table, plus a test, a man page entry and a changelog line: CONTRIBUTING.md lists what a change needs.)
 - **`put.scan`**: read stdin and show each line the way `put.peek` shows arguments. (Reading input with `getline()`, memory you allocate and must `free()`.)
