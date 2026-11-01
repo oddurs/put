@@ -11,3 +11,11 @@ updates:
         patterns: ["*"]
     commit-message:
       prefix: "ci"
+
+  # The digest-pinned Alpine image used for the musl job and Linux releases.
+  - package-ecosystem: docker
+    directory: /.github/docker
+    schedule:
+      interval: monthly
+    commit-message:
+      prefix: "ci"

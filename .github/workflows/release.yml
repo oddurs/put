@@ -14,11 +14,14 @@ on:
 permissions:
   contents: read
 
+env:
+  PUT_STRICT: "1"
+
 jobs:
   linux:
     name: linux ${{ matrix.arch }} (static, musl)
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 15
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
@@ -29,15 +32,32 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Build, test and package in Alpine
+      # Timestamps in the tarball come from the commit, not the clock.
+      - name: Use the commit time as SOURCE_DATE_EPOCH
+        run: echo "SOURCE_DATE_EPOCH=$(git log -1 --format=%ct)" >> "$GITHUB_ENV"
+      - name: Build the pinned Alpine image
+        run: docker build -t put-build -f .github/docker/Dockerfile tests
+      - name: Build, test and package
         run: |
-          docker run --rm -v "$PWD:/src" -w /src -e TARGET="${{ matrix.arch }}-linux" alpine:3.22 sh -euc '
-            apk add --no-cache build-base bash python3 zsh
+          docker run --rm -e PUT_STRICT -e SOURCE_DATE_EPOCH -e TARGET="${{ matrix.arch }}-linux" \
+            -v "$PWD:/src" -w /src put-build sh -euc '
             make STATIC=1 CFLAGS=-O2 WERROR=1 test
             make STATIC=1 CFLAGS=-O2 check-hardening
             ! readelf -d build/put | grep -q NEEDED
-            make STATIC=1 CFLAGS=-O2 bindist
+            make STATIC=1 CFLAGS=-O2 bindist-check
           '
+      - name: Rebuild from scratch and compare (reproducible build)
+        run: |
+          first=$(sha256sum build/dist/*.tar.gz | cut -d' ' -f1)
+          docker run --rm -e SOURCE_DATE_EPOCH -e TARGET="${{ matrix.arch }}-linux" \
+            -v "$PWD:/src" -w /src put-build sh -euc '
+            make BUILD=build/again STATIC=1 CFLAGS=-O2 all
+            make BUILD=build/again STATIC=1 CFLAGS=-O2 bindist
+          '
+          second=$(sha256sum build/again/dist/*.tar.gz | cut -d' ' -f1)
+          echo "first:  $first"
+          echo "second: $second"
+          test "$first" = "$second"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: dist-linux-${{ matrix.arch }}
@@ -47,11 +67,14 @@ jobs:
   macos:
     name: macos universal
     runs-on: macos-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: Use the commit time as SOURCE_DATE_EPOCH
+        run: echo "SOURCE_DATE_EPOCH=$(git log -1 --format=%ct)" >> "$GITHUB_ENV"
+      - run: python3 -m pip install --user --break-system-packages -r tests/requirements.txt
       - name: Build both architectures and test the native one
         run: |
           make BUILD=build/arm64 CFLAGS="-O2 -arch arm64 -mmacosx-version-min=11.0" WERROR=1 test
@@ -62,14 +85,18 @@ jobs:
           lipo -create -output build/universal/put build/arm64/put build/x86_64/put
           lipo -archs build/universal/put | grep -q x86_64
           lipo -archs build/universal/put | grep -q arm64
-          ln -sf put build/universal/put.version
-          arch -arm64 build/universal/put.version
-          # The x86_64 half needs Rosetta, which the runner may not have.
+      # bindist strips the binary; bindist-check then runs the golden tests
+      # on the stripped binary from the tarball, so a broken code signature
+      # or a bad strip can't ship unnoticed.
+      - run: make BUILD=build/universal TARGET=universal-macos bindist-check
+      - name: The x86_64 half runs too, where Rosetta is available
+        run: |
+          bin="build/universal/dist/check/put-$(make -s print-version)-universal-macos/bin"
           if arch -x86_64 /usr/bin/true 2>/dev/null; then
-            arch -x86_64 build/universal/put.version
+            arch -x86_64 "$bin/put.version"
+          else
+            echo "no Rosetta on this runner; skipped"
           fi
-          rm build/universal/put.version
-      - run: make BUILD=build/universal TARGET=universal-macos bindist
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: dist-macos-universal
@@ -113,12 +140,15 @@ jobs:
       - name: Release notes from CHANGELOG.md
         run: |
           version=$(make -s print-version)
-          awk -v v="$version" '
-            $0 ~ "^## \\[" v "\\]" { on = 1; next }
+          # index() matches the heading literally; a regex would treat the
+          # dots in the version as wildcards.
+          awk -v heading="## [$version]" '
+            index($0, heading) == 1 { on = 1; next }
             on && /^## \[/ { exit }
             on && /^\[/ { exit }
             on { print }
           ' CHANGELOG.md > notes.md
+          test -s notes.md || { echo "no notes for $version in CHANGELOG.md"; exit 1; }
           cat notes.md
       - name: Publish the release
         env:
