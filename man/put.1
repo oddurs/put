@@ -1,0 +1,108 @@
+.TH PUT 1 2026-10-31 "put 0.1.0" "User Commands"
+.SH NAME
+put, put.raw, put.lines, put.nul, put.peek, put.quote, put.json, put.help \- print arguments exactly as given
+.SH SYNOPSIS
+.B put
+.RI [ arg ...]
+.br
+.B put.\c
+.I mode
+.RI [ arg ...]
+.SH DESCRIPTION
+.B put
+prints its arguments literally.
+It has no options and interprets no escape sequences, so
+.B put
+"$x" prints the value of
+.I x
+whatever it contains, including
+.BR \-n ,
+.B \-\-
+or backslashes.
+.PP
+One binary is installed under several names.
+The name it is run as selects the mode:
+.TP
+.B put
+Arguments joined by single spaces, then a newline.
+With no arguments, prints a newline.
+.TP
+.B put.raw
+Arguments joined by single spaces, with no trailing newline.
+.TP
+.B put.lines
+Each argument followed by a newline.
+.TP
+.B put.nul
+Each argument followed by a NUL byte, for
+.BR "xargs \-0" .
+.TP
+.B put.peek
+A numbered line per argument showing what it really contains.
+Leading and trailing spaces are shown as \(pc, an empty argument as
+\(es empty, control characters as escapes such as \er and \ex07,
+invisible Unicode characters (no-break and zero-width spaces, byte order
+marks, bidirectional controls, tag characters) as \eu{a0}, and invalid
+UTF-8 as \exff.
+On a terminal, escapes are colored; otherwise literal backslashes are
+doubled and a literal \(pc or \(es is escaped, so every output has one
+reading.
+.B put.peek
+never writes a control byte taken from its input.
+.TP
+.B put.quote
+The arguments as shell input that recreates them, for bash and zsh.
+Uses bare words where safe, single quotes for printable text, and
+$'...' with \exHH escapes for control bytes, invalid UTF-8 and invisible
+characters.
+.TP
+.B put.json
+The arguments as a JSON array of strings.
+.TP
+.B put.help
+A summary of the modes.
+.SH EXIT STATUS
+.TP
+.B 0
+Success.
+.TP
+.B 1
+Writing to standard output failed.
+.TP
+.B 2
+Run under a name that is not
+.B put
+or a known
+.BI put. mode\fR.
+.TP
+.B 3
+.B put.json
+was given an argument that is not valid UTF-8.
+Nothing is written.
+.PP
+If the reader of standard output exits early,
+.B put
+is ended by SIGPIPE, like other Unix tools.
+.SH ENVIRONMENT
+.TP
+.B NO_COLOR
+If set and not empty,
+.B put.peek
+does not use color.
+No other mode reads the environment.
+.SH EXAMPLES
+.nf
+$ x=\-n; put "$x"
+\-n
+$ put.peek "a " $'b\er' ""
+3 args
+0  a\(pc
+1  b\er
+2  \(es empty
+$ put.quote it\e's $'tab\ethere'
+\(aqit\(aq\e\(aq\(aqs\(aq $\(aqtab\ethere\(aq
+.fi
+.SH SEE ALSO
+.BR echo (1),
+.BR printf (1),
+.BR xargs (1)
