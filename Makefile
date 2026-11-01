@@ -28,6 +28,7 @@ BINDIR ?= $(PREFIX)/bin
 MANDIR ?= $(PREFIX)/share/man/man1
 
 BUILD ?= build
+PYTHON ?= python3
 MODES := raw lines nul peek quote json help version
 UNAME_S := $(shell uname -s)
 
@@ -46,26 +47,37 @@ endif
 # Hardening: defences that make memory bugs harder to exploit if one ever
 # slips through. Stack canaries, checked libc calls (FORTIFY), and on Linux a
 # position-independent executable with a read-only relocation table.
+#
+# Distribution packagers usually bring their own hardening flags. If CPPFLAGS
+# or CFLAGS already mention _FORTIFY_SOURCE, theirs wins and ours is skipped
+# (defining it twice is a warning, and an error with WERROR=1).
 HARDEN ?= 1
 STATIC ?= 0
+HARDEN_CFLAGS :=
+HARDEN_CPPFLAGS :=
+HARDEN_LDFLAGS :=
 ifeq ($(HARDEN),1)
-HARDEN_CFLAGS := -fstack-protector-strong
-HARDEN_CPPFLAGS := -U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=3
+HARDEN_CFLAGS += -fstack-protector-strong
+ifeq ($(findstring _FORTIFY_SOURCE,$(CPPFLAGS) $(CFLAGS)),)
+HARDEN_CPPFLAGS += -U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=3
+endif
 ifeq ($(UNAME_S),Linux)
 HARDEN_CFLAGS += -fPIE -fstack-clash-protection
-ifeq ($(STATIC),1)
-HARDEN_LDFLAGS := -static-pie
-else
-HARDEN_LDFLAGS := -pie
-endif
 HARDEN_LDFLAGS += -Wl,-z,relro,-z,now,-z,noexecstack
+ifeq ($(STATIC),1)
+HARDEN_LDFLAGS += -static-pie
+else
+HARDEN_LDFLAGS += -pie
 endif
 else ifeq ($(STATIC),1)
-HARDEN_LDFLAGS := -static
+HARDEN_LDFLAGS += -static
+endif
+else ifeq ($(STATIC),1)
+HARDEN_LDFLAGS += -static
 endif
 
 # -std=c11 pins the language version. _POSIX_C_SOURCE unlocks POSIX functions
-# like isatty() and poll() that plain C11 doesn't define.
+# like isatty() and select() that plain C11 doesn't define.
 BASE_CPPFLAGS := -Isrc -D_POSIX_C_SOURCE=200809L -DPUT_VERSION='"$(VERSION)"'
 ALL_CPPFLAGS := $(BASE_CPPFLAGS) $(HARDEN_CPPFLAGS) $(CPPFLAGS)
 ALL_CFLAGS := -std=c11 $(WARNINGS) $(HARDEN_CFLAGS) $(CFLAGS)
@@ -77,7 +89,8 @@ OBJ := $(SRC:src/%.c=$(BUILD)/obj/%.o)
 DEP := $(OBJ:.o=.d)
 
 .PHONY: all test check sanitize valgrind analyze coverage fuzz fmt fmt-check tidy \
-	shellcheck check-version check-hardening lint dist bindist install install-files uninstall clean print-version
+	shellcheck man-lint check-version check-hardening check-unicode lint dist bindist bindist-check install install-strip \
+	install-files uninstall clean print-version
 
 # ---------------------------------------------------------------------------
 # Build
@@ -112,8 +125,9 @@ $(BUILD)/unit: tests/unit.c $(BUILD)/obj/utf8.o $(BUILD)/obj/out.o
 test: all $(BUILD)/unit
 	$(BUILD)/unit
 	tests/run.sh $(BUILD)
-	python3 tests/roundtrip.py $(BUILD)
-	python3 tests/io.py $(BUILD)
+	$(PYTHON) tests/roundtrip.py $(BUILD)
+	$(PYTHON) tests/io.py $(BUILD)
+	$(PYTHON) tests/unicode.py $(BUILD)
 
 check: test lint
 
@@ -144,8 +158,8 @@ coverage:
 # and checks invariants in tests/fuzz.c. Found crashes are saved as crash-*.
 FUZZ_TIME ?= 60
 FUZZ_CC ?= clang
-FUZZ_SRC := $(filter-out src/main.c,$(SRC)) tests/fuzz.c
-$(BUILD)/fuzzer: $(FUZZ_SRC) $(HDR)
+FUZZ_SRC := $(filter-out src/main.c,$(SRC)) tests/fuzz.c tests/decode.c
+$(BUILD)/fuzzer: $(FUZZ_SRC) $(HDR) tests/decode.h
 	mkdir -p $(BUILD)
 	$(FUZZ_CC) $(BASE_CPPFLAGS) -std=c11 $(WARNINGS) -g -O1 \
 		-fsanitize=fuzzer,address,undefined -fno-sanitize-recover=all -o $@ $(FUZZ_SRC)
@@ -160,7 +174,7 @@ fuzz: $(BUILD)/fuzzer
 
 CLANG_FORMAT ?= clang-format
 CLANG_TIDY ?= clang-tidy
-FORMAT_FILES := $(wildcard src/*.c src/*.h tests/*.c)
+FORMAT_FILES := $(filter-out src/unicode_tables.h,$(wildcard src/*.c src/*.h tests/*.c tests/*.h))
 SHELL_FILES := tests/run.sh $(wildcard scripts/*.sh)
 
 fmt:
@@ -170,7 +184,7 @@ fmt-check:
 	$(CLANG_FORMAT) --dry-run --Werror $(FORMAT_FILES)
 
 tidy:
-	$(CLANG_TIDY) --quiet $(SRC) tests/unit.c tests/fuzz.c -- -std=c11 $(BASE_CPPFLAGS)
+	$(CLANG_TIDY) --quiet $(SRC) tests/unit.c tests/fuzz.c tests/decode.c -- -std=c11 $(BASE_CPPFLAGS) -Itests
 
 shellcheck:
 	shellcheck $(SHELL_FILES)
@@ -181,7 +195,19 @@ check-version:
 	@grep -q '^## \[$(VERSION)\]' CHANGELOG.md || { echo "CHANGELOG.md: no section for $(VERSION)"; exit 1; }
 	@echo "version $(VERSION) is consistent"
 
-lint: fmt-check tidy shellcheck check-version
+man-lint:
+	mandoc -T lint -W warning man/put.1
+
+lint: fmt-check tidy shellcheck man-lint check-version
+
+# src/unicode_tables.h is generated; this fails if it's out of date. Needs the
+# `regex` Python package at the version pinned in the script.
+check-unicode:
+	$(PYTHON) scripts/gen-unicode.py > $(BUILD)/unicode_tables.h.new
+	cmp src/unicode_tables.h $(BUILD)/unicode_tables.h.new || { \
+		echo "src/unicode_tables.h is out of date: run python3 scripts/gen-unicode.py > src/unicode_tables.h"; \
+		exit 1; }
+	@echo "src/unicode_tables.h is up to date"
 
 print-version:
 	@echo $(VERSION)
@@ -199,23 +225,42 @@ dist:
 
 # Packages an existing $(BUILD)/put; it deliberately doesn't rebuild, so a
 # binary made some other way (say, a macOS universal binary from lipo) can be
-# packaged too.
+# packaged too. The tarball is reproducible: file order, timestamps (taken
+# from SOURCE_DATE_EPOCH, by default the last commit's time) and ownership
+# are fixed, so the same binary always gives the same bytes.
 TARGET ?= $(shell uname -m)-$(shell uname -s | tr '[:upper:]' '[:lower:]')
 STRIP ?= strip
+SOURCE_DATE_EPOCH ?= $(shell git log -1 --format=%ct 2>/dev/null || echo 0)
 DISTNAME := put-$(VERSION)-$(TARGET)
+DISTDIR := $(BUILD)/dist/$(DISTNAME)
 bindist:
 	@test -x $(BUILD)/put || { echo "no $(BUILD)/put: build first"; exit 1; }
-	rm -rf $(BUILD)/dist/$(DISTNAME)
-	$(MAKE) --no-print-directory install-files DESTDIR=$(BUILD)/dist/$(DISTNAME) PREFIX=
-	$(STRIP) $(BUILD)/dist/$(DISTNAME)/bin/put
-	cp README.md LICENSE CHANGELOG.md $(BUILD)/dist/$(DISTNAME)/
-	tar -C $(BUILD)/dist -czf $(BUILD)/dist/$(DISTNAME).tar.gz $(DISTNAME)
-	@echo "wrote $(BUILD)/dist/$(DISTNAME).tar.gz"
+	rm -rf $(DISTDIR) $(DISTDIR).tar.gz
+	$(MAKE) --no-print-directory install-files DESTDIR=$(DISTDIR) PREFIX=
+	$(STRIP) $(DISTDIR)/bin/put
+	cp README.md LICENSE CHANGELOG.md $(DISTDIR)/
+	$(PYTHON) scripts/mktar.py $(BUILD)/dist $(DISTNAME) $(SOURCE_DATE_EPOCH) $(DISTDIR).tar.gz
+	@echo "wrote $(DISTDIR).tar.gz"
+
+# Unpack the binary tarball somewhere fresh and run the golden tests against
+# the binaries inside it: what ships is what was tested.
+bindist-check: bindist
+	rm -rf $(BUILD)/dist/check
+	mkdir -p $(BUILD)/dist/check
+	tar -C $(BUILD)/dist/check -xzf $(DISTDIR).tar.gz
+	tests/run.sh $(BUILD)/dist/check/$(DISTNAME)/bin
 
 # ---------------------------------------------------------------------------
 # Install
 
-install: all install-files
+# install-files runs as a separate make so that `make -j install` can't start
+# copying before the link has finished.
+install: all
+	$(MAKE) --no-print-directory install-files
+
+install-strip: all
+	$(MAKE) --no-print-directory install-files
+	$(STRIP) $(DESTDIR)$(BINDIR)/put
 
 install-files:
 	install -d $(DESTDIR)$(BINDIR) $(DESTDIR)$(MANDIR)

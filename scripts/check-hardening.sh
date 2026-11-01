@@ -34,7 +34,7 @@ if ldd --version 2>&1 | grep -qi musl; then
     # musl's FORTIFY comes from fortify-headers, which inlines its checks
     # instead of calling __*_chk functions, so there's no symbol to look for.
     printf 'skip  FORTIFY_SOURCE (musl checks are inlined)\n'
-elif printf '%s\n' "$syms" | grep -q '_chk'; then
+elif printf '%s\n' "$syms" | grep -v '__stack_chk' | grep -Eq '__[a-z0-9_]+_chk\b'; then
     pass "FORTIFY_SOURCE"
 else
     miss "FORTIFY_SOURCE"
