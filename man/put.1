@@ -1,4 +1,4 @@
-.TH PUT 1 2026-10-31 "put 0.1.0" "User Commands"
+.TH PUT 1 2026-11-01 "put 0.1.0" "User Commands"
 .SH NAME
 put, put.raw, put.lines, put.nul, put.peek, put.quote, put.json, put.help, put.version \- print arguments exactly as given
 .SH SYNOPSIS
@@ -38,33 +38,63 @@ Each argument followed by a NUL byte, for
 .BR "xargs \-0" .
 .TP
 .B put.peek
-A numbered line per argument showing what it really contains.
-Leading and trailing spaces are shown as \(pc, an empty argument as
-\(es empty, control characters as escapes such as \er and \ex07,
-invisible Unicode characters (no-break and zero-width spaces, byte order
-marks, bidirectional controls, tag characters) as \eu{a0}, and invalid
-UTF-8 as \exff.
-On a terminal, escapes are colored; otherwise literal backslashes are
-doubled and a literal \(pc or \(es is escaped, so every output has one
-reading.
+A header with the number of arguments, then a numbered line per argument
+showing what it really contains:
+.RS
+.IP \(bu 2
+leading and trailing spaces as \(pc;
+.IP \(bu
+an empty argument as \(es empty;
+.IP \(bu
+tab, newline, carriage return and escape as \et, \en, \er and \ee, and
+other control bytes as \ex07 and the like;
+.IP \(bu
+bytes that are not valid UTF-8 as \exff and the like;
+.IP \(bu
+every character that renders as nothing, as blank space, or depending on
+the font as \eu{a0} and the like: format characters (zero-width and
+bidirectional controls, tags), spaces other than U+0020, line and paragraph
+separators, default-ignorable characters such as variation selectors,
+unassigned and private-use code points, and a combining mark with no
+character before it to attach to.
+.RE
+.IP
+On a terminal, escapes and markers are colored, and bidirectional controls
+are shown in red.
+Otherwise there is no color; instead a literal backslash is shown as \e\e
+and a literal \(pc or \(es is escaped, so plain output is lossless: each
+argument can be recovered exactly from its line.
 .B put.peek
-never writes a control byte taken from its input.
+never writes a control byte or an invisible character taken from its
+input, so it is safe to run on untrusted data.
 .TP
 .B put.quote
-The arguments as shell input that recreates them, for bash and zsh.
-Uses bare words where safe, single quotes for printable text, and
-$'...' with \exHH escapes for control bytes, invalid UTF-8 and invisible
-characters.
+The arguments as shell input that recreates them in bash (including 3.2)
+and zsh, whether pasted into a script or an interactive shell.
+Words made only of letters, digits and
+.B _\-./,:+@%
+are left bare; other printable text is single-quoted.
+Text with control bytes, invalid UTF-8, invisible characters or a stray
+combining mark uses $'...' with \exHH byte escapes, so the line shows what
+is really there.
+Inside $'...', a single quote is written as \ex27, never as \e\(aq, which
+bash 3.2 misreads during history expansion.
 .TP
 .B put.json
-The arguments as a JSON array of strings.
+The arguments as a JSON array of strings (RFC 8259).
+Control characters, U+2028 and U+2029 are written as \eu escapes.
 .TP
 .B put.help
 A summary of the modes.
 .TP
 .B put.version
-The version, as
-.BR "put 0.1.0" .
+The version and the Unicode version its character tables come from, as
+.BR "put 0.1.0 (Unicode 17.0)" .
+.PP
+Every mode ignores its arguments' meaning entirely: in
+.BR "put.version \-\-help" ,
+.B \-\-help
+is just an unused argument.
 .SH EXIT STATUS
 .TP
 .B 0
@@ -72,6 +102,7 @@ Success.
 .TP
 .B 1
 Writing to standard output failed.
+A message naming the reason goes to standard error.
 .TP
 .B 2
 Run under a name that is not
@@ -84,28 +115,47 @@ or a known
 was given an argument that is not valid UTF-8.
 Nothing is written.
 .PP
-If the reader of standard output exits early,
+If the reader of standard output has gone away,
 .B put
-is ended by SIGPIPE, like other Unix tools.
+is ended by SIGPIPE, like other Unix tools, even if its parent ignored or
+blocked that signal.
 .SH ENVIRONMENT
 .TP
 .B NO_COLOR
 If set and not empty,
 .B put.peek
 does not use color.
-No other mode reads the environment.
+.TP
+.B TERM
+If
+.BR dumb ,
+.B put.peek
+does not use color.
+.PP
+No other mode reads the environment, and no mode depends on the locale.
 .SH EXAMPLES
 .nf
 $ x=\-n; put "$x"
 \-n
-$ put.peek "a " $'b\er' ""
-3 args
+$ put.peek "a " $'b\er' "" $'nb\exc2\exa0sp'
+4 args
 0  a\(pc
 1  b\er
 2  \(es empty
-$ put.quote it\e's $'tab\ethere'
-\(aqit\(aq\e\(aq\(aqs\(aq $\(aqtab\ethere\(aq
+3  nb\eu{a0}sp
+$ put.quote it\e's $'tab\ethere' a=b
+\(aqit\(aq\e\(aq\(aqs\(aq $\(aqtab\ethere\(aq \(aqa=b\(aq
+$ put.json "say \e"hi\e""
+["say \e"hi\e""]
 .fi
+.SH CAVEATS
+.B put.peek
+writes UTF-8 and assumes the terminal displays it.
+.PP
+A terminal that reorders right-to-left text (such as Arabic or Hebrew) can
+still move characters around within a line.
+Bidirectional control characters are always escaped, but the letters
+themselves are shown as they are.
 .SH SEE ALSO
 .BR echo (1),
 .BR printf (1),

@@ -44,30 +44,33 @@ One binary, installed under several names (like `mkfs.ext4`). Type `put.` and pr
 | `put.quote` | shell input that recreates the args | a newline | bash `printf '%q '` |
 | `put.json` | a JSON array of strings | `[]` | hand-rolled JSON |
 | `put.help` | the list of modes | | `--help` |
-| `put.version` | the version number | | `--version` |
+| `put.version` | the version, and the Unicode version its tables use | | `--version` |
 
 ### put.peek
 
 | Content | Shown as |
 | --- | --- |
 | Leading or trailing space | `·` |
-| Tab, CR, LF | `\t`, `\r`, `\n` |
-| ESC and other control bytes | `\e`, `\x07`, `\x7f` |
-| No-break, zero-width, BOM, tag characters | `\u{a0}`, `\u{200b}`, `\u{feff}`, `\u{e0041}` |
-| Bidirectional controls ([Trojan Source](https://trojansource.codes)) | `\u{202e}`, in red |
+| Tab, CR, LF, ESC | `\t`, `\r`, `\n`, `\e` |
+| Other control bytes | `\x07`, `\x7f` |
 | Invalid UTF-8 | `\xff` |
+| Anything that renders as nothing, as blank space, or depending on the font: no-break and other non-ASCII spaces, zero-width characters, BOM, variation selectors, tag characters, private-use and unassigned code points | `\u{a0}`, `\u{200b}`, `\u{feff}`, `\u{fe0f}`, `\u{e0041}` |
+| Bidirectional controls ([Trojan Source](https://trojansource.codes)) | `\u{202e}`, in red |
+| A combining mark with nothing to attach to | `\u{301}` |
 | Empty argument | `∅ empty` |
 
-On a terminal, escapes and markers are colored so they can't be confused with real text. When piped (or with `NO_COLOR` set), literal backslashes are doubled and a literal `·` or `∅` is escaped instead. Either way, `put.peek` never writes a control byte from its input, so it's safe to point at untrusted data.
+The character classes are generated from Unicode 17.0 data and checked against every one of the 1.1 million code points in CI.
+
+On a terminal, escapes and markers are colored so they can't be confused with real text. When piped (or with `NO_COLOR` set, or `TERM=dumb`), literal backslashes are doubled and a literal `·` or `∅` is escaped instead, which makes the output lossless: every argument can be recovered exactly from its line. Either way, `put.peek` never writes a control byte or an invisible character from its input, so it's safe to point at untrusted data.
 
 ### put.quote
 
 ```sh
-$ put.quote plain "two words" "it's" $'tab\there' ""
-plain 'two words' 'it'\''s' $'tab\there' ''
+$ put.quote plain "two words" "it's" $'tab\there' "" a=b
+plain 'two words' 'it'\''s' $'tab\there' '' 'a=b'
 ```
 
-Paste the output into bash or zsh and you get the exact same arguments back. Control bytes, invalid UTF-8 and invisible characters use `$'...'` with byte escapes, so what you copy shows what's really there.
+Paste the output into bash or zsh, in a script or at an interactive prompt, and you get the exact same arguments back. That includes macOS's bash 3.2, history expansion (`!`), and zsh options such as `EXTENDED_GLOB` and `MAGIC_EQUAL_SUBST` (the reason `a=b` is quoted). Control bytes, invalid UTF-8 and invisible characters use `$'...'` with byte escapes, so what you copy shows what's really there.
 
 ### put.json
 
@@ -133,12 +136,13 @@ make fmt         # clang-format
 
 How put is checked:
 
-- **Tests.** Byte-for-byte golden tests of every mode and exit code, unit tests, and I/O edge cases (closed stdout, full disk, non-blocking pipes, broken pipes).
-- **Round-trip fuzzing.** Random byte strings go through `put.quote` and back through real bash and zsh, through `put.json` and back through a JSON parser, and through `put.nul`, and every byte must survive.
-- **Coverage-guided fuzzing.** libFuzzer runs every mode on generated input, checking properties such as "`put.peek` never writes a control byte".
+- **Tests.** Byte-for-byte golden tests of every mode and exit code, unit tests, and I/O edge cases: closed stdout, full disk, non-blocking pipes, a full non-blocking terminal, and SIGPIPE ignored or blocked by the parent.
+- **Every code point.** All 1,111,936 Unicode scalar values go through `put.peek` and `put.quote`, checked against Unicode data computed independently of the generated tables.
+- **Round-trip fuzzing.** Random byte strings go through `put.quote` and back through real shells (bash 5, bash 3.2 on macOS, zsh with and without its risky options; each both as a script and typed at an interactive prompt), through `put.json` and back through a JSON parser, and through `put.nul`, and every byte must survive.
+- **Coverage-guided fuzzing.** libFuzzer runs every mode on generated input and decodes `put.peek`, `put.quote` and `put.json` output back into arguments, which must match exactly. It also checks properties such as "`put.peek` never writes a control byte".
 - **Memory and analysis.** AddressSanitizer + UBSan, valgrind, clang-tidy, GCC's analyzer and CodeQL, plus line coverage of at least 95%.
-- **Hardened builds.** Stack protector, `_FORTIFY_SOURCE`, PIE and full RELRO, verified in CI.
-- **Platforms.** gcc and clang on Linux x86_64 and arm64, Alpine (musl), and macOS, all with warnings as errors.
+- **Hardened, reproducible builds.** Stack protector, `_FORTIFY_SOURCE`, PIE and full RELRO, verified in CI. Release tarballs are byte-for-byte reproducible and CI rebuilds them to prove it; the golden tests run against the exact binaries that ship.
+- **Platforms.** gcc and clang on Linux x86_64 and arm64, Alpine (musl), FreeBSD and macOS, all with warnings as errors.
 
 [CONTRIBUTING.md](CONTRIBUTING.md) covers the rest, including how releases are cut. New to C? [docs/TOUR.md](docs/TOUR.md) walks through the codebase in reading order.
 

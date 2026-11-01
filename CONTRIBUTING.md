@@ -13,9 +13,10 @@ If a proposal bends one of these, open an issue to discuss it before writing cod
 
 ## Building and testing
 
-You need a C11 compiler, make, bash and python3. zsh is optional (the quote round-trip test uses it when present).
+You need a C11 compiler, GNU make (`gmake` on the BSDs), bash and python3. zsh and the Python packages in `tests/requirements.txt` are optional locally: tests that need them skip with a message. CI sets `PUT_STRICT=1`, which turns those skips into failures.
 
 ```sh
+python3 -m pip install -r tests/requirements.txt   # optional: the pinned Unicode data
 make check        # build, all tests, and lint: run this before pushing
 ```
 
@@ -28,12 +29,17 @@ Deeper checks, all of which CI runs on every pull request:
 | `make analyze` | GCC static analyzer | gcc 12+ |
 | `make coverage` | line coverage, fails under 95% | gcc, gcovr |
 | `make fuzz` | libFuzzer for `FUZZ_TIME` seconds (default 60) | clang |
-| `make lint` | clang-format, clang-tidy, shellcheck, version check | clang-format, clang-tidy, shellcheck |
+| `make lint` | clang-format, clang-tidy, shellcheck, man page lint, version check | clang-format, clang-tidy, shellcheck, mandoc |
+| `make check-unicode` | the generated `src/unicode_tables.h` is up to date | the pinned `regex` package |
 | `make check-hardening` | confirms hardening flags reached the binary | Linux, readelf |
+| `make bindist-check` | packages a binary tarball and runs the golden tests on what's inside | python3 |
+
+To test `put.quote` against another bash build too (say a locally built 3.2), set `PUT_EXTRA_BASH=/path/to/bash`.
 
 ## What a change needs
 
-- **Tests.** Output changes need golden tests in `tests/run.sh`. New escaping or quoting rules also need a property in `tests/fuzz.c`.
+- **Tests.** Output changes need golden tests in `tests/run.sh`. New escaping or quoting rules also need the matching change in the strict decoders in `tests/decode.c`, which the fuzzer uses to prove the output can be read back exactly.
+- **Unicode.** The character classes are generated: change `scripts/gen-unicode.py`, then run `python3 scripts/gen-unicode.py > src/unicode_tables.h`. Moving to a newer Unicode version means bumping `regex` in `tests/requirements.txt` and `REGEX_VERSION` in the script together, and is a change to `put.peek` output, so it goes in the changelog.
 - **Docs.** New or changed behavior goes in `man/put.1`, `README.md`, and under `## [Unreleased]` in `CHANGELOG.md`.
 - **Formatting.** Run `make fmt` before committing.
 - **No new warnings.** CI builds with `-Werror` on gcc and clang.
@@ -48,6 +54,6 @@ Deeper checks, all of which CI runs on every pull request:
    git tag -a v0.2.0 -m "put 0.2.0"
    git push origin main v0.2.0
    ```
-5. The release workflow builds static Linux binaries (x86_64, aarch64) and a universal macOS binary, runs the tests on each, and publishes a GitHub release with `SHA256SUMS` and signed build provenance. It refuses to publish if the tag doesn't match `VERSION`.
+5. The release workflow builds static Linux binaries (x86_64, aarch64) and a universal macOS binary, runs the tests on each and again on the stripped binaries inside each tarball, rebuilds the Linux tarballs from scratch to confirm they're byte-identical, and publishes a GitHub release with `SHA256SUMS` and signed build provenance. It refuses to publish if the tag doesn't match `VERSION`.
 
 The same workflow runs on every push to `main` without publishing, so release builds are always known to work.

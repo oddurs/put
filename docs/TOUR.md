@@ -1,6 +1,6 @@
 # A tour of put, for people new to C
 
-This codebase is small (about 900 lines of C, a good share of it comments) and written to be read. This guide gives a reading order and points out the C ideas you'll meet in each file. Every source file also has `C note:` comments at the places where something C-specific is happening.
+This codebase is small (about 1,000 lines of C, a good share of it comments, plus a generated Unicode table) and written to be read. This guide gives a reading order and points out the C ideas you'll meet in each file. Every source file also has `C note:` comments at the places where something C-specific is happening.
 
 ## 0. How a C program gets built
 
@@ -33,7 +33,8 @@ This is the most "systems" file in the project, and the one where production cod
 
 - **`static` at file level** makes a variable or function private to its file. That's C's only encapsulation.
 - **Buffering.** Asking the operating system to write is slow compared to copying memory, so output collects in a 64 KiB array and goes out in large chunks. `out_bytes` copies into the buffer; `out_flush` hands it to the OS.
-- **`write()` is a system call, and it can come up short.** It may write fewer bytes than asked (so `write_all` loops), be interrupted by a signal (`EINTR`: try again), or refuse because stdout is non-blocking (`EAGAIN`: wait with `poll()`, then try again). Tutorial code usually calls `printf` and hopes. `tests/io.py` sets up the non-blocking case, which the first version of put got wrong.
+- **`write()` is a system call, and it can come up short.** It may write fewer bytes than asked (so `write_all` loops), be interrupted by a signal (`EINTR`: try again), or refuse because stdout is non-blocking (`EAGAIN`: wait with `select()`, then try again). Tutorial code usually calls `printf` and hopes. `tests/io.py` sets up the non-blocking case, which the first version of put got wrong.
+- **Portability bites quietly.** An earlier version waited with `poll()`, the more modern call. It worked everywhere tested, but macOS's `poll()` doesn't support terminals and returns at once, so a full terminal would have made put spin at 100% CPU. `select()` is older and clunkier, and works on every Unix. The man pages' BUGS sections are worth reading.
 - **`errno`** is a global set by library calls when they fail. `strerror(errno)` turns it into a message like "No space left on device". Try `build/put hi > /dev/full` on Linux, or `build/put hi >&-` to run with stdout closed.
 - **Variadic functions.** `out_printf(const char *fmt, ...)` takes any number of arguments, like `printf` itself, using `va_list`. It formats into a small stack array and only uses `malloc` when the result doesn't fit.
 - **Check errors once, at the end.** After the first failure, output stops and `out_finish` reports it. That keeps every call site simple: modes never check for errors themselves.
@@ -44,6 +45,8 @@ This is the most "systems" file in the project, and the one where production cod
 - **`char` vs `unsigned char`.** Whether plain `char` is signed is up to the platform. Bytes above 0x7F can come out negative, so code that looks at byte values converts to `unsigned char` first.
 - **Fixed-width types.** `uint32_t` is exactly 32 bits on every platform; `size_t` is the type for sizes and lengths.
 - **Compound literals.** `(utf8_char){.cp = cp, .len = need, .valid = true}` builds a struct value inline, naming each field.
+- **Generated code and binary search.** Which characters count as invisible comes from Unicode's own data, not a hand-written list: `scripts/gen-unicode.py` writes `src/unicode_tables.h`, a sorted array of ranges, and `in_ranges()` binary-searches it. Each step halves the part left to search, so 700 ranges take about 10 comparisons. Note `lo + (hi - lo) / 2` rather than `(lo + hi) / 2`, which can overflow: a bug that sat in Java's standard library for nine years.
+- **`static` in a header.** The tables are `static const` arrays in a header, so each `.c` file that includes it gets a private copy. That's fine for data only `utf8.c` uses, and it lets `tests/unit.c` check the tables are sorted.
 
 ## 5. src/mode_peek.c and src/mode_quote.c
 
@@ -56,9 +59,10 @@ This is the most "systems" file in the project, and the one where production cod
 
 - **tests/unit.c** tests the decoder and output layer directly. The `CHECK` macro uses `#cond` to turn the checked expression into a string and `__LINE__` to say where it failed.
 - **tests/run.sh** runs each command and compares stdout byte for byte with `cmp`, plus the exit code.
-- **tests/roundtrip.py** is a property test: random input, a property that must always hold (quoting then unquoting gives back the input), thousands of tries.
+- **tests/roundtrip.py** is a property test: random input, a property that must always hold (quoting then unquoting gives back the input), thousands of tries. It pastes `put.quote` output into real shells, including interactive ones, because a review found that macOS's bash 3.2 expands `!` in a place newer shells don't.
 - **tests/io.py** sets up output conditions a shell can't easily create, like a non-blocking pipe with a slow reader.
-- **tests/fuzz.c** is a *coverage-guided fuzzer*. libFuzzer watches which branches each input reaches and mutates the inputs that found new ones, so it digs into corners random testing misses. Each run checks properties like "`put.peek` never writes a control byte". `make fuzz` runs it for a minute; it typically gets through a few hundred thousand inputs.
+- **tests/unicode.py** runs every Unicode code point through the real binary. With only 1.1 million of them, there's no need to sample: exhaustive testing is a few seconds.
+- **tests/fuzz.c** is a *coverage-guided fuzzer*. libFuzzer watches which branches each input reaches and mutates the inputs that found new ones, so it digs into corners random testing misses. Each run checks properties like "`put.peek` never writes a control byte", and the strongest kind of property there is: *decode the output and get the input back*. `tests/decode.c` holds strict decoders for `put.peek`, `put.quote` and `put.json`. If two different inputs ever gave the same output, one of them would decode wrong. `make fuzz` runs it for a minute; it typically gets through a few hundred thousand inputs.
 - **`make coverage`** shows which lines the tests never run. Open `build/cov/index.html` to see them highlighted. CI fails if line coverage drops below 95%.
 
 ## 7. Tools that catch C's sharp edges
