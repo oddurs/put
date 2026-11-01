@@ -101,6 +101,27 @@ def shells() -> list:
     return found
 
 
+CHUNK = 50  # interactive cases per shell session
+
+
+def interactive(argv: list, quoted: list, cwd: str, timeout: float) -> tuple:
+    """Type `printf '%s\\0' <quoted> END` lines into an interactive shell.
+
+    Returns the decoded argument lists, one per line that ran, and the
+    finished process.
+    """
+    script = b"echo history-bait\n"
+    for q in quoted:
+        script += b"printf '%s\\0' " + q + b" " + END + b"\n"
+    script += b"exit\n"
+    back = run_shell(f"{argv[0]} -i", [*argv, "-i"], timeout, input=script, cwd=cwd,
+                     env={**os.environ, "HISTFILE": os.devnull, "PS1": "", "PS2": ""})
+    out = back.stdout
+    if out.startswith(b"history-bait\n"):
+        out = out[len(b"history-bait\n"):]
+    return decode_cases(out), back
+
+
 def decode_cases(stdout: bytes) -> list:
     """Split interactive output (NUL-terminated args, END between cases)."""
     cases, current = [], []
@@ -188,25 +209,21 @@ def main() -> int:
             if back.returncode != 0 or got != args:
                 fail(f"put.quote via {label} -c", args, (q, got, back.stderr))
 
-        # Interactive: all cases in one session, typed on stdin. A command
-        # that ran earlier gives history expansion something to expand.
-        script = b"echo history-bait\n"
-        for q in quoted:
-            if q is not None:
-                script += b"printf '%s\\0' " + q + b" " + END + b"\n"
-        script += b"exit\n"
-        back = run_shell(f"{label} -i", [*argv, "-i"], 300, input=script, cwd=scratch,
-                         env={**os.environ, "HISTFILE": os.devnull, "PS1": "", "PS2": ""})
-        out = back.stdout.split(b"\n", 1)[1] if back.stdout.startswith(b"history-bait\n") else back.stdout
-        got_cases = decode_cases(out)
-        want_cases = [args for args, q in zip(all_cases, quoted) if q is not None]
-        if len(got_cases) != len(want_cases):
-            fail(f"put.quote via {label} -i: case count", [], (len(got_cases), len(want_cases),
-                                                              back.stderr[-500:]))
-        else:
-            for want, got in zip(want_cases, got_cases):
-                if want != got:
-                    fail(f"put.quote via {label} -i", want, got)
+        # Interactive: cases typed on stdin, CHUNK per session. A command that
+        # ran earlier gives history expansion something to expand. If a
+        # session goes wrong, its cases are replayed one per session to name
+        # the exact line responsible.
+        pairs = [(args, q) for args, q in zip(all_cases, quoted) if q is not None]
+        for start in range(0, len(pairs), CHUNK):
+            chunk = pairs[start:start + CHUNK]
+            got_cases, back = interactive(argv, [q for _, q in chunk], scratch, 60)
+            if got_cases == [args for args, _ in chunk]:
+                continue
+            for args, q in chunk:
+                one, back = interactive(argv, [q], scratch, 10)
+                if one != [args]:
+                    fail(f"put.quote via {label} -i", args,
+                         (b"typed: printf '%s\\0' " + q, one, back.stderr[-300:]))
 
     leftovers = os.listdir(scratch)
     if leftovers:
