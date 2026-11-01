@@ -21,7 +21,7 @@ jobs:
           - { os: ubuntu-latest, cc: clang }
           - { os: macos-latest, cc: clang }
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Install zsh
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y zsh
@@ -32,14 +32,14 @@ jobs:
     name: sanitizers (ASan + UBSan)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - run: sudo apt-get update && sudo apt-get install -y zsh
       - run: make CC=clang WERROR=1 sanitize
 
   valgrind:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - run: sudo apt-get update && sudo apt-get install -y valgrind
       - run: make WERROR=1 valgrind
 
@@ -47,7 +47,7 @@ jobs:
     name: format + clang-tidy
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - run: sudo apt-get update && sudo apt-get install -y clang-format-18 clang-tidy-18
       - run: make CLANG_FORMAT=clang-format-18 CLANG_TIDY=clang-tidy-18 lint
 
@@ -55,7 +55,7 @@ jobs:
     name: install to a staging directory
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - run: make install DESTDIR="$PWD/stage" PREFIX=/usr
       - name: Installed commands work
         run: |
