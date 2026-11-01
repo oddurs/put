@@ -1,0 +1,34 @@
+# Static analysis with clang-tidy. Run with `make tidy` (or `make lint`).
+#
+# Disabled checks, and why:
+#   cert-err33-c / bugprone-unused-return-value
+#       want every fwrite/fputc result checked at the call; out.c records the
+#       first failure instead and reports it once in out_finish().
+#   readability-magic-numbers
+#       a UTF-8 decoder is made of magic numbers (0xC0, 0x10FFFF, ...); each
+#       one is commented where it's used.
+#   readability-identifier-length
+#       short names like `c`, `n` and `i` are idiomatic in small C loops.
+#   bugprone-easily-swappable-parameters
+#       flags (pointer, length) pairs, which is the normal C convention.
+#   misc-include-cleaner
+#       too noisy for system headers on some platforms.
+#   clang-analyzer-security.insecureAPI.DeprecatedOrUnsafeBufferHandling
+#       flags every vfprintf/fprintf call and suggests Annex K *_s functions
+#       that glibc and macOS don't provide.
+Checks: >
+  bugprone-*,
+  cert-*,
+  clang-analyzer-*,
+  misc-*,
+  performance-*,
+  portability-*,
+  readability-*,
+  -cert-err33-c,
+  -bugprone-unused-return-value,
+  -readability-magic-numbers,
+  -readability-identifier-length,
+  -bugprone-easily-swappable-parameters,
+  -misc-include-cleaner,
+  -clang-analyzer-security.insecureAPI.DeprecatedOrUnsafeBufferHandling
+WarningsAsErrors: '*'
