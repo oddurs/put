@@ -16,6 +16,9 @@ Usage: python3 tests/roundtrip.py BUILD_DIR [ITERATIONS]
 
 Set PUT_STRICT=1 to fail instead of skipping when zsh is missing (CI does).
 Set PUT_EXTRA_BASH=/path/to/bash to test one more bash build as well.
+Set PUT_NO_INTERACTIVE=bash (or zsh) to skip that shell's interactive runs
+where it can't run one; the reason is printed. CI uses it on FreeBSD, where
+an interactive bash reading from a pipe hangs before running any command.
 """
 
 import json
@@ -199,6 +202,7 @@ def main() -> int:
     scratch_dir = tempfile.TemporaryDirectory(prefix="put-roundtrip-")
     scratch = scratch_dir.name
 
+    skipped_interactive = []
     for label, argv in tested:
         # Non-interactive: one shell per case, so a failure is isolated.
         for args, q in zip(all_cases, quoted):
@@ -215,6 +219,12 @@ def main() -> int:
         # session goes wrong, its cases are replayed one per session to name
         # the exact line responsible.
         pairs = [(args, q) for args, q in zip(all_cases, quoted) if q is not None]
+
+        skip = os.environ.get("PUT_NO_INTERACTIVE", "").split()
+        if any(label == name or label.startswith(name + "+") for name in skip):
+            print(f"roundtrip: {label} -i skipped (PUT_NO_INTERACTIVE)")
+            skipped_interactive.append(label)
+            continue
 
         # First, can this shell run an interactive session here at all? If
         # not, say so once rather than timing out on every chunk.
@@ -244,8 +254,11 @@ def main() -> int:
         fail("shells created files (quoting let a redirect through)", [], leftovers[:5])
     scratch_dir.cleanup()
 
+    modes = "each with -c and -i"
+    if skipped_interactive:
+        modes += f"; -i skipped for {', '.join(skipped_interactive)}"
     print(f"roundtrip: {iterations} cases, shells: {', '.join(described)} "
-          f"(each with -c and -i), {failures} failed")
+          f"({modes}), {failures} failed")
     return 1 if failures else 0
 
 

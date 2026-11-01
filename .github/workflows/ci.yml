@@ -81,8 +81,14 @@ jobs:
         with:
           persist-credentials: false
       - uses: vmactions/freebsd-vm@c46abacb49f09938ca4e1702d15d836285d694cc # v1.5.9
+        env:
+          # In this VM an interactive bash reading from a pipe hangs before
+          # running any command (and ignores SIGTERM). Interactive bash is
+          # covered on Linux (5.x) and macOS (3.2); here bash runs every case
+          # non-interactively, and zsh both ways.
+          PUT_NO_INTERACTIVE: bash
         with:
-          envs: PUT_STRICT
+          envs: PUT_STRICT PUT_NO_INTERACTIVE
           usesh: true
           # pip's package name carries the Python version (py311-pip,
           # py312-pip, ...), so ask the installed python3 which one it is.
@@ -91,8 +97,6 @@ jobs:
             pkg install -y "py$(python3 -c 'import sys; print("%d%d" % sys.version_info[:2])')-pip"
           run: |
             uname -a
-            echo "interactive bash probe:"
-            printf 'echo bash-i-works\nexit\n' | timeout 20 bash --norc --noprofile -i; echo "exit $?"
             python3 -m pip install --break-system-packages -r tests/requirements.txt
             gmake WERROR=1 test
 
