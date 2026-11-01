@@ -7,6 +7,7 @@
  */
 #include "modes.h"
 #include "out.h"
+#include "utf8.h"
 
 #include <signal.h>
 #include <stdio.h>
@@ -68,7 +69,7 @@ static int mode_help(size_t n, char *const args[]) {
 static int mode_version(size_t n, char *const args[]) {
     (void)n;
     (void)args;
-    out_str("put " PUT_VERSION "\n");
+    out_printf("put %s (Unicode %s)\n", PUT_VERSION, utf8_unicode_version());
     return EXIT_OK;
 }
 
@@ -99,9 +100,14 @@ int main(int argc, char *argv[]) {
      * When a reader like `head -1` exits early, the next write raises
      * SIGPIPE. The default action quietly ends the program, which is what
      * Unix tools are expected to do. A parent process can leave SIGPIPE
-     * ignored, so restore the default explicitly.
+     * ignored or blocked, and both are inherited, so restore the default
+     * action and unblock it explicitly.
      */
     signal(SIGPIPE, SIG_DFL);
+    sigset_t pipe_only;
+    sigemptyset(&pipe_only);
+    sigaddset(&pipe_only, SIGPIPE);
+    sigprocmask(SIG_UNBLOCK, &pipe_only, NULL);
 
     /* argc can be 0 if put is started with an empty argument list. */
     const char *name = argc > 0 ? base_name(argv[0]) : "put";

@@ -10,18 +10,19 @@
  *   EINTR           a signal interrupted the call; just try again
  *   EAGAIN          stdout was left non-blocking by another program (common
  *                   with Node.js and some terminals); wait until it's ready
+ *                   with select()
  *   late errors     the first failure is remembered and reported once, at the
  *                   end, with a nonzero exit code
  */
 #include "out.h"
 
 #include <errno.h>
-#include <poll.h>
 #include <stdarg.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/select.h>
 #include <unistd.h>
 
 #define OUT_BUFFER_SIZE 65536
@@ -52,11 +53,21 @@ static bool would_block(int err) {
     return err == EAGAIN;
 }
 
-/* Sleep until stdout can take more data. Returns false on a real error. */
+/*
+ * Sleep until stdout can take more data. Returns false on a real error.
+ *
+ * select() rather than poll(): macOS's poll() doesn't support character
+ * devices and returns POLLNVAL at once for a terminal, which would turn this
+ * wait into a busy loop. select() works for pipes, sockets and terminals on
+ * every Unix. Its fd_set has a size limit (FD_SETSIZE, usually 1024), which
+ * file descriptor 1 is comfortably under.
+ */
 static bool wait_until_writable(void) {
-    struct pollfd pfd = {.fd = STDOUT_FILENO, .events = POLLOUT, .revents = 0};
     for (;;) {
-        int ready = poll(&pfd, 1, -1); /* -1: no timeout */
+        fd_set writable;
+        FD_ZERO(&writable);
+        FD_SET(STDOUT_FILENO, &writable);
+        int ready = select(STDOUT_FILENO + 1, NULL, &writable, NULL, NULL); /* NULL: no timeout */
         if (ready > 0) {
             return true; /* writable, or an error the next write() will report */
         }
