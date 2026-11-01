@@ -14,7 +14,10 @@
  *   plain   (piped, or NO_COLOR set): no color, so anything that could be
  *           confused with a marker is escaped instead: a literal backslash
  *           becomes \\, a literal · becomes \u{b7}, a literal ∅ \u{2205}.
- * Either way, put.peek never writes a control byte from its input.
+ * Either way, put.peek never writes a control byte from its input, nor a
+ * character that renders as nothing (see utf8_is_invisible). In plain style
+ * the output is also lossless: every argument can be recovered exactly from
+ * its line, which tests/fuzz.c checks by decoding it.
  */
 #include "modes.h"
 #include "out.h"
@@ -101,9 +104,15 @@ static void render_control(unsigned char b) {
 /*
  * Render the character starting at s (n bytes remain) and return how many
  * bytes it used.
+ *
+ * *after_base says whether the last thing written was an ordinary character
+ * from the input. A combining mark (like the accent in a decomposed é) is
+ * only written as itself then; anywhere else it would land on a marker, an
+ * escape or the index column, so it's escaped instead.
  */
-static size_t render_char(const unsigned char *s, size_t n) {
+static size_t render_char(const unsigned char *s, size_t n, bool *after_base) {
     utf8_char c = utf8_decode(s, n);
+    bool base = false;
     if (!c.valid) {
         emit_hex(STYLE_ESCAPE, "\\x", s[0], 2, "");
     } else if (c.cp < 0x20 || c.cp == 0x7F) {
@@ -115,11 +124,16 @@ static size_t render_char(const unsigned char *s, size_t n) {
     } else if (utf8_is_invisible(c.cp)) {
         const char *style = utf8_is_bidi_control(c.cp) ? STYLE_WARN : STYLE_ESCAPE;
         emit_hex(style, "\\u{", c.cp, 1, "}");
-    } else if (!styled && (c.cp == CP_MIDDLE_DOT || c.cp == CP_EMPTY_SET)) {
-        emit_hex(STYLE_ESCAPE, "\\u{", c.cp, 1, "}"); /* would look like a marker */
+    } else if ((!styled && (c.cp == CP_MIDDLE_DOT || c.cp == CP_EMPTY_SET)) ||
+               (!*after_base && utf8_is_combining(c.cp))) {
+        /* Plain output: · or ∅ would look like a marker. Either way: a
+         * combining mark with nothing of its own to attach to. */
+        emit_hex(STYLE_ESCAPE, "\\u{", c.cp, 1, "}");
     } else {
         out_bytes((const char *)s, c.len); /* an ordinary visible character */
+        base = true;
     }
+    *after_base = base;
     return c.len;
 }
 
@@ -144,12 +158,14 @@ static void render_arg(const char *arg) {
     }
 
     size_t i = 0;
+    bool after_base = false;
     while (i < n) {
         if (s[i] == ' ' && (i < lead_end || i >= trail_start)) {
             emit(STYLE_MARK, MIDDLE_DOT);
+            after_base = false;
             i++;
         } else {
-            i += render_char(s + i, n - i);
+            i += render_char(s + i, n - i, &after_base);
         }
     }
 }

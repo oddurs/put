@@ -12,6 +12,7 @@
  * needs), UTF-16 surrogates (U+D800..U+DFFF), and anything above U+10FFFF.
  */
 #include "utf8.h"
+#include "unicode_tables.h"
 
 utf8_char utf8_decode(const unsigned char *s, size_t n) {
     /* C note: this is a "compound literal": a struct value written inline. */
@@ -81,20 +82,38 @@ bool utf8_is_bidi_control(uint32_t cp) {
            || (cp >= 0x2066 && cp <= 0x2069); /* isolates */
 }
 
+/*
+ * Binary search: is cp inside one of the n sorted, non-overlapping ranges?
+ * Each step halves the part of the table still to search, so even the
+ * 700-range table takes about 10 comparisons.
+ */
+static bool in_ranges(uint32_t cp, const utf8_range *table, size_t n) {
+    size_t lo = 0;
+    size_t hi = n; /* the answer, if any, is in table[lo .. hi-1] */
+    while (lo < hi) {
+        size_t mid = lo + (hi - lo) / 2; /* not (lo + hi) / 2, which can overflow */
+        if (cp < table[mid].first) {
+            hi = mid;
+        } else if (cp > table[mid].last) {
+            lo = mid + 1;
+        } else {
+            return true;
+        }
+    }
+    return false;
+}
+
+/* sizeof the whole array / sizeof one element = number of elements. */
+#define COUNT(table) (sizeof(table) / sizeof((table)[0]))
+
 bool utf8_is_invisible(uint32_t cp) {
-    return (cp >= 0x80 && cp <= 0xA0)          /* C1 controls, no-break space */
-           || cp == 0xAD                       /* soft hyphen */
-           || cp == 0x034F                     /* combining grapheme joiner */
-           || cp == 0x115F || cp == 0x1160     /* Hangul fillers */
-           || cp == 0x17B4 || cp == 0x17B5     /* Khmer inherent vowels */
-           || cp == 0x180E                     /* Mongolian vowel separator */
-           || (cp >= 0x2000 && cp <= 0x200F)   /* typographic spaces, zero-width chars */
-           || (cp >= 0x2028 && cp <= 0x202F)   /* line/paragraph separators, narrow nbsp */
-           || (cp >= 0x205F && cp <= 0x206F)   /* word joiner, invisible operators */
-           || cp == 0x3000                     /* ideographic space */
-           || cp == 0x3164 || cp == 0xFFA0     /* Hangul fillers */
-           || cp == 0xFEFF                     /* byte order mark */
-           || (cp >= 0xFFF9 && cp <= 0xFFFB)   /* interlinear annotation */
-           || (cp >= 0xE0000 && cp <= 0xE007F) /* tag characters */
-           || utf8_is_bidi_control(cp);
+    return in_ranges(cp, INVISIBLE_RANGES, COUNT(INVISIBLE_RANGES));
+}
+
+bool utf8_is_combining(uint32_t cp) {
+    return in_ranges(cp, COMBINING_RANGES, COUNT(COMBINING_RANGES));
+}
+
+const char *utf8_unicode_version(void) {
+    return PUT_UNICODE_VERSION;
 }

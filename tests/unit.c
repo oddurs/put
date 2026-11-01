@@ -105,6 +105,42 @@ static void test_classification(void) {
     CHECK(!utf8_is_invisible('a'));
     CHECK(!utf8_is_invisible(0xE9));
     CHECK(!utf8_is_invisible(0x1F642));
+
+    CHECK(utf8_is_invisible(0xFE0F));   /* variation selector 16 (emoji style) */
+    CHECK(utf8_is_invisible(0xE0100));  /* variation selector 17 */
+    CHECK(utf8_is_invisible(0x2800));   /* braille pattern blank */
+    CHECK(utf8_is_invisible(0xE000));   /* private use */
+    CHECK(utf8_is_invisible(0x0378));   /* unassigned */
+    CHECK(utf8_is_invisible(0x10FFFF)); /* noncharacter, last code point */
+    CHECK(utf8_is_combining(0x0301));   /* combining acute accent */
+    CHECK(utf8_is_combining(0x093F));   /* Devanagari vowel sign i (spacing mark) */
+    CHECK(!utf8_is_combining('e'));
+    CHECK(!utf8_is_combining(0xE9)); /* precomposed é is not a mark */
+}
+
+/* The binary search needs sorted, non-overlapping ranges; check the
+ * generated tables really are. Including the generated header here gives
+ * this file its own copy of the static tables. */
+#include "unicode_tables.h"
+
+static void check_table(const utf8_range *table, size_t n) {
+    for (size_t i = 0; i < n; i++) {
+        CHECK(table[i].first <= table[i].last);
+        CHECK(table[i].last <= 0x10FFFF);
+        if (i > 0) {
+            CHECK(table[i - 1].last + 1 < table[i].first); /* sorted, and not adjacent */
+        }
+    }
+}
+
+static void test_tables(void) {
+    check_table(INVISIBLE_RANGES, sizeof INVISIBLE_RANGES / sizeof INVISIBLE_RANGES[0]);
+    check_table(COMBINING_RANGES, sizeof COMBINING_RANGES / sizeof COMBINING_RANGES[0]);
+    /* The first and last entries are found: the search's edge cases. */
+    CHECK(utf8_is_invisible(INVISIBLE_RANGES[0].first));
+    CHECK(utf8_is_combining(COMBINING_RANGES[0].first));
+    CHECK(utf8_is_invisible(0x10FFFF));
+    CHECK(!utf8_is_invisible(INVISIBLE_RANGES[0].first - 1));
 }
 
 /*
@@ -148,6 +184,7 @@ int main(void) {
     test_no_overread();
     test_valid_strings();
     test_classification();
+    test_tables();
     test_out_printf_long();
 
     printf("unit: %d checks, %d failed\n", checks, failures);
