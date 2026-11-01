@@ -143,8 +143,16 @@ if [ -w /dev/full ]; then
 fi
 
 if [ -z "$RUNNER" ]; then
-    # A reader that stops early should end put quietly via SIGPIPE (128+13).
-    "$BIN/put.lines" $(seq 1 100000) | head -n 1 >/dev/null
+    # A reader that has already exited should end put quietly via SIGPIPE
+    # (status 128+13). The reader here (`true`) exits at once; put writes
+    # after a short delay, into a pipe nobody is reading. The trap makes the
+    # parent ignore SIGPIPE first, which put inherits, so this also checks
+    # that put restores the default instead of failing with a write error.
+    (
+        trap '' PIPE
+        sleep 0.2
+        exec "$BIN/put" x
+    ) | true
     check "closed pipe ends put with SIGPIPE" [ "${PIPESTATUS[0]}" -eq 141 ]
 
     # Color needs a terminal; util-linux `script` provides a fake one.
